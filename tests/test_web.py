@@ -381,12 +381,20 @@ def test_mail_diagnostics_report_shape(cfg, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", lambda *a, **k: Sock())
 
     class Drop:
-        def __init__(self, *a, **k): ...
-        def connect(self, *a): raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+        def __init__(self, *a, **k): raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
 
     monkeypatch.setattr(smtplib, "SMTP", Drop)
     monkeypatch.setattr(smtplib, "SMTP_SSL", Drop)
     report = diagnose.mail_report(cfg)
     text = str(report)
     assert "closed with no greeting" in text and "SMTPServerDisconnected" in text
-    assert "app-pass" not in text and "password set (8 chars)" in text
+    assert "app-pass" not in text and "password set (8 chars); NOT a Gmail App Password" in text
+
+
+def test_gmail_app_password_copy_paste_cleanup(cfg, monkeypatch):
+    monkeypatch.setenv("SMTP_PASSWORD", ' "abcd efgh ijkl\tmnop"\n')
+    mb = cfg.mailbox(cfg.member("amartya"))
+    assert mb["smtp_password"] == "abcdefghijklmnop" and mb["imap_password"] == "abcdefghijklmnop"
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", " pass with spaces ")
+    assert cfg.mailbox(cfg.member("amartya"))["smtp_password"] == "pass with spaces"  # non-Gmail: inner spaces kept

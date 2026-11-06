@@ -150,6 +150,13 @@ class Config:
         return self.team.get("from_name_format", "{name} | {company}").format(
             name=member["name"], company=c["short_name"], legal_name=c["legal_name"])
 
+    @staticmethod
+    def _clean_password(pw: str, host: str) -> str:
+        """Copy-paste fixes: surrounding quotes/whitespace always; for Gmail also every inner space
+        (including non-breaking ones), since App Passwords are 16 letters shown in groups of four."""
+        pw = (pw or "").strip().strip("'\"").strip()
+        return re.sub(r"\s", "", pw) if "gmail.com" in (host or "") else pw
+
     def mailbox(self, member: dict) -> dict[str, Any]:
         """SMTP/IMAP settings for a member: their own mailbox if SMTP_PASSWORD_<ID> is set,
         otherwise the shared company mailbox (SMTP_USER / SMTP_PASSWORD)."""
@@ -157,7 +164,7 @@ class Config:
         own_pw = self.env(f"SMTP_PASSWORD_{key}")
         if own_pw:
             user = self.env(f"SMTP_USER_{key}") or member["email"]
-            return {
+            mb = {
                 "id": f"member:{member['id']}", "own": True, "from_email": member["email"] or user,
                 "smtp_host": self.env(f"SMTP_HOST_{key}") or self.env("SMTP_HOST", "smtp.gmail.com"),
                 "smtp_port": int(self.env(f"SMTP_PORT_{key}") or self.env("SMTP_PORT", "587")),
@@ -165,14 +172,20 @@ class Config:
                 "imap_host": self.env(f"IMAP_HOST_{key}") or self.env("IMAP_HOST", "imap.gmail.com"),
                 "imap_user": user, "imap_password": self.env(f"IMAP_PASSWORD_{key}") or own_pw,
             }
+            return self._cleaned(mb)
         user = self.env("SMTP_USER") or self.company["email"]
-        return {
+        return self._cleaned({
             "id": "shared", "own": False, "from_email": user,
             "smtp_host": self.env("SMTP_HOST", "smtp.gmail.com"), "smtp_port": int(self.env("SMTP_PORT", "587")),
             "smtp_user": user, "smtp_password": self.env("SMTP_PASSWORD"),
             "imap_host": self.env("IMAP_HOST", "imap.gmail.com"), "imap_user": self.env("IMAP_USER") or user,
             "imap_password": self.env("IMAP_PASSWORD") or self.env("SMTP_PASSWORD"),
-        }
+        })
+
+    def _cleaned(self, mb: dict) -> dict:
+        mb["smtp_password"] = self._clean_password(mb["smtp_password"], mb["smtp_host"])
+        mb["imap_password"] = self._clean_password(mb["imap_password"], mb["imap_host"])
+        return mb
 
     def project_allowed_for(self, project: dict, member_id: str | None) -> bool:
         """A personal portfolio (owner set) may only be cited by its owner."""

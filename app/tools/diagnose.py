@@ -41,9 +41,8 @@ def smtp_steps(host: str, port: int, user: str, password: str, timeout: float = 
             s = smtplib.SMTP_SSL(host, port, context=ctx, timeout=timeout)
             out.append("SSL handshake ok")
         else:
-            s = smtplib.SMTP(timeout=timeout)
-            code, msg = s.connect(host, port)
-            out.append(f"greeting {code}")
+            s = smtplib.SMTP(host, port, timeout=timeout)  # host is needed for STARTTLS certificate checks
+            out.append("greeting ok")
             s.ehlo()
             if not s.has_extn("starttls"):
                 out.append("server offers no STARTTLS")
@@ -95,7 +94,15 @@ def mail_report(cfg) -> dict:
         if mb["id"] in seen:
             continue
         seen.add(mb["id"])
-        pw_note = f"password set ({len(mb['smtp_password'].replace(' ', ''))} chars)" if mb["smtp_password"] else "NO password set"
+        pw = mb["smtp_password"]
+        if not pw:
+            pw_note = "NO password set"
+        else:
+            pw_note = f"password set ({len(pw)} chars)"
+            if "gmail.com" in mb["smtp_host"]:
+                looks_ok = len(pw) == 16 and pw.isalpha() and pw.islower()
+                pw_note += ("; looks like a Gmail App Password" if looks_ok else
+                            "; NOT a Gmail App Password (those are exactly 16 lowercase letters)")
         report[f"{mb['id']} config"] = [f"user={mb['smtp_user'] or '-'} host={mb['smtp_host']}:{mb['smtp_port']} {pw_note}"]
         report[f"{mb['id']} smtp:{mb['smtp_port']}"] = smtp_steps(mb["smtp_host"], mb["smtp_port"], mb["smtp_user"], mb["smtp_password"])
         alt = 465 if mb["smtp_port"] != 465 else 587
