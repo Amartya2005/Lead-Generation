@@ -1,0 +1,120 @@
+# Non-secret settings. Secrets (SMTP password, API keys) live in .env.
+# Any value marked (env: NAME) can be overridden from .env.
+
+llm:
+  provider: gemini            # gemini | groq | xai | ollama | none   (env: LLM_PROVIDER)
+  model: ""                   # blank = provider default below          (env: LLM_MODEL)
+  default_models:
+    gemini: gemini-2.5-flash
+    groq: llama-3.3-70b-versatile
+    xai: grok-3-mini
+    ollama: llama3.1
+  requests_per_minute: 8      # stay under free-tier RPM
+  max_calls_per_run: 150      # hard cap per pipeline run
+  temperature: 0.4
+  timeout_seconds: 60
+
+crawl:
+  # Identify yourself honestly. Put your own site in the URL.
+  user_agent: "LeadResearchBot/1.0 (+https://focustriggerautomation.com)"
+  per_host_delay_seconds: 6   # minimum gap between requests to one host (robots Crawl-delay wins if larger)
+  timeout_seconds: 20
+  max_pages_per_site: 3       # homepage + up to 2 contact/about/careers pages
+  cache_hours: 72
+  use_playwright_fallback: true
+  max_body_chars: 600000
+
+research:
+  max_new_leads_per_run: 30
+  queries_per_run: 8
+  results_per_query: 10
+  seconds_between_queries: [6, 12]   # random delay range between search calls
+  sources: [duckduckgo]              # add google_cse if you have a free CSE key
+  resolve_directory_listings: true   # turn IndiaMART/Justdial result titles into company websites
+  # Public directory listing pages you are allowed to crawl (robots.txt is still checked).
+  # Outbound links on these pages become candidate companies.
+  directory_pages: []
+  #  - https://example-startup-directory.in/odisha
+
+qualification:
+  min_score: 6                # leads below this are discarded
+  llm_weight: 0.4             # 0 = pure rules, 1 = pure LLM
+
+email:
+  max_words: 120
+  use_llm: true               # false = deterministic template only
+
+sending:
+  daily_limit: 25             # (env: DAILY_SEND_LIMIT)
+  min_delay_seconds: 90       # random delay between sends
+  max_delay_seconds: 300
+  human_approval: true        # (env: HUMAN_APPROVAL)  only 'approved' drafts are sent
+  dry_run: false              # (env: DRY_RUN)  log instead of sending
+  max_per_domain: 1           # never email the same company twice
+  send_window:
+    timezone: Asia/Kolkata
+    start_hour: 10
+    end_hour: 18
+    weekdays: [0, 1, 2, 3, 4, 5]   # Mon-Sat (0 = Monday)
+
+storage:
+  db_path: data/leads.db
+  csv_report: output/leads.csv
+  google_sheets:
+    enabled: false
+    spreadsheet: "Lead Outreach"
+    worksheet: "leads"
+    service_account_file: service_account.json
+
+# Domains never treated as a lead (platforms, directories, government).
+skip_domains:
+  - justdial.com
+  - indiamart.com
+  - tradeindia.com
+  - sulekha.com
+  - exportersindia.com
+  - facebook.com
+  - instagram.com
+  - linkedin.com
+  - twitter.com
+  - x.com
+  - youtube.com
+  - wikipedia.org
+  - google.com
+  - goo.gl
+  - amazon.in
+  - amazon.com
+  - flipkart.com
+  - zomato.com
+  - swiggy.com
+  - practo.com
+  - magicbricks.com
+  - 99acres.com
+  - housing.com
+  - naukri.com
+  - indeed.com
+  - glassdoor.co.in
+  - glassdoor.com
+  - quora.com
+  - reddit.com
+  - crunchbase.com
+  - tracxn.com
+  - zaubacorp.com
+  - tofler.in
+  - yelp.com
+  - tripadvisor.in
+  - tripadvisor.com
+  - makemytrip.com
+  - booking.com
+  - medium.com
+  - wordpress.com
+  - blogspot.com
+  - wixsite.com
+  - yellowpages.in
+  - asklaila.com
+  - nearbuy.com
+  - urbanpro.com
+  - shiksha.com
+  - collegedunia.com
+  - startupindia.gov.in
+skip_tlds: [gov.in, nic.in, gov, edu]

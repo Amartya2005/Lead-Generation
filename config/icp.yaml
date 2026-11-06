@@ -1,0 +1,68 @@
+# Ideal Customer Profile: geography weights, industries and search queries.
+
+location_weights:     # points added to the 1-10 score (max 3)
+  odisha: 3.0
+  tier2: 2.0
+  tier3: 2.0
+  metro: 1.0
+  india_unknown: 0.5
+
+cities:
+  odisha: [Bhubaneswar, Cuttack, Rourkela, Berhampur, Brahmapur, Sambalpur, Puri, Balasore,
+           Baleswar, Bhadrak, Baripada, Jharsuguda, Angul, Jeypore, Koraput, Kendrapara, Jajpur,
+           Dhenkanal, Paradip, Keonjhar, Kendujhar, Rayagada, Bargarh, Balangir, Bolangir,
+           Bhawanipatna, Khordha, Jatni, Talcher, Sundargarh, Nayagarh, Phulbani]
+  metro: [Mumbai, Delhi, New Delhi, Bengaluru, Bangalore, Chennai, Kolkata, Hyderabad, Pune,
+          Ahmedabad, Gurugram, Gurgaon, Noida, Navi Mumbai, Thane]
+  tier2: [Jaipur, Lucknow, Kanpur, Nagpur, Indore, Bhopal, Visakhapatnam, Vizag, Patna, Vadodara,
+          Surat, Coimbatore, Kochi, Ludhiana, Agra, Nashik, Rajkot, Madurai, Varanasi, Ranchi,
+          Raipur, Guwahati, Chandigarh, Mysuru, Mysore, Thiruvananthapuram, Vijayawada, Jamshedpur,
+          Dehradun, Amritsar, Jodhpur, Mangaluru, Mangalore, Hubli, Aurangabad, Gwalior, Jabalpur,
+          Siliguri, Durgapur, Asansol, Tiruchirappalli, Trichy, Salem, Warangal, Guntur, Kozhikode,
+          Thrissur, Belagavi, Udaipur, Kota, Ajmer, Prayagraj, Allahabad, Meerut, Dhanbad,
+          Bokaro, Bhilai, Bilaspur, Jammu, Faridabad, Ghaziabad]
+  tier3: [Gaya, Muzaffarpur, Bhagalpur, Hazaribagh, Deoghar, Haldia, Kharagpur, Bardhaman,
+          Srikakulam, Vizianagaram, Nellore, Tirupati, Anantapur, Kurnool, Karimnagar, Nizamabad,
+          Davanagere, Shimoga, Tumkur, Bellary, Kollam, Kannur, Palakkad, Erode, Tirunelveli,
+          Vellore, Thanjavur, Puducherry, Satara, Kolhapur, Sangli, Solapur, Latur, Akola, Amravati,
+          Jalgaon, Bhavnagar, Jamnagar, Junagadh, Anand, Bikaner, Alwar, Bhilwara, Sikar, Rohtak,
+          Panipat, Karnal, Hisar, Patiala, Bathinda, Jalandhar, Haridwar, Rishikesh, Haldwani,
+          Gorakhpur, Bareilly, Aligarh, Moradabad, Jhansi, Ujjain, Sagar, Rewa, Satna, Korba,
+          Durg, Rajnandgaon, Silchar, Dibrugarh, Jorhat, Agartala, Shillong, Imphal, Aizawl]
+
+states:
+  odisha: [Odisha, Orissa]
+  other: [Andhra Pradesh, Telangana, Karnataka, Kerala, Tamil Nadu, Maharashtra, Gujarat, Rajasthan,
+          Punjab, Haryana, Uttar Pradesh, Uttarakhand, Madhya Pradesh, Chhattisgarh, Jharkhand,
+          Bihar, West Bengal, Assam, Meghalaya, Tripura, Manipur, Mizoram, Nagaland, Sikkim, Goa,
+          Himachal Pradesh, Jammu and Kashmir, Delhi]
+
+# Industry -> keywords found on the site, and the needs they usually imply.
+industries:
+  education:     {keywords: [coaching, institute, academy, tuition, classes, school, college, training centre, training center], needs: [crm, automation, custom_app]}
+  healthcare:    {keywords: [clinic, hospital, diagnostic, pathology, dental, physiotherapy, nursing home, pharmacy], needs: [automation, website, crm]}
+  real_estate:   {keywords: [real estate, builders, developers, properties, apartments, plots, realty], needs: [crm, website]}
+  manufacturing: {keywords: [manufacturer, manufacturing, factory, industries, fabrication, plant, foundry], needs: [erp, automation]}
+  distribution:  {keywords: [distributor, wholesaler, wholesale, dealer, stockist, supplier, trading, traders], needs: [erp, automation]}
+  hospitality:   {keywords: [hotel, resort, restaurant, cafe, caterer, catering, banquet], needs: [website, automation]}
+  retail:        {keywords: [showroom, store, boutique, jewellers, jewellery, furniture, electronics, mart], needs: [website, automation, erp]}
+  logistics:     {keywords: [logistics, transport, courier, packers and movers, cargo, fleet], needs: [custom_app, erp]}
+  professional:  {keywords: [chartered accountant, ca firm, law firm, advocates, consultancy, consultants, tax], needs: [website, crm]}
+  interiors:     {keywords: [interior, architect, modular kitchen, construction], needs: [website, crm]}
+  travel:        {keywords: [travel agency, tours and travels, tour operator, holidays], needs: [website, crm, automation]}
+  events:        {keywords: [event management, events, wedding planner, exhibition, summit], needs: [website, registration, custom_app]}
+  startup:       {keywords: [startup, saas, platform, incubated, founders, seed funded], needs: [custom_app, website]}
+
+# Search query generation. {industry} and {city} are filled in; Odisha cities are tried first.
+query_industries: [coaching institute, clinic, diagnostic centre, real estate developer, manufacturer,
+                   distributor, hotel, restaurant, furniture showroom, interior designer, travel agency,
+                   CA firm, logistics company, event management, school, jewellers]
+query_templates:
+  - "{industry} in {city}"
+  - "{industry} {city} contact"
+  - "\"{city}\" {industry} \"whatsapp us\""
+  - "site:indiamart.com {industry} {city}"
+  - "site:justdial.com {industry} {city}"
+  - "startup {city} hiring operations"
+# Share of queries drawn from each city group (rest from Odisha).
+city_mix: {odisha: 0.5, tier2: 0.2, tier3: 0.2, metro: 0.1}

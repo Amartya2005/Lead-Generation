@@ -1,0 +1,18 @@
+# Core (all free / open source)
+langgraph>=0.2,<2
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+pyyaml>=6.0
+python-dotenv>=1.0
+rich>=13.0
+ddgs>=9.0            # DuckDuckGo search (free, no key)
+tldextract>=5.0
+playwright>=1.45     # JS-rendering fallback; run `playwright install chromium` once
+
+# Optional: Google Sheets export (free with a Google service account)
+# gspread>=6.0
+# google-auth>=2.0
+
+# Dev
+pytest>=8.0
