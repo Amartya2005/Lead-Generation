@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}First-time setup{% endblock %}
+{% block content %}
+<div class="login card" style="max-width:420px">
+  <h1>Create the admin login</h1>
+  <p class="muted small">Only needed once. The setup code is in the deployment's server log
+    (Vercel → Project → Logs, search "SETUP CODE"; on a VM: <code>journalctl -u leadgen-web</code>).</p>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="code">Setup code</label>
+    <input id="code" type="text" name="code" autocomplete="off" autocapitalize="none" required>
+    <label for="member">You are</label>
+    <select id="member" name="member">{% for m in members %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}</select>
+    <label for="pw">Password <span class="muted small">(at least 10 characters)</span></label>
+    <input id="pw" type="password" name="password" autocomplete="new-password" minlength="10" required>
+    <label for="rp">Repeat password</label>
+    <input id="rp" type="password" name="repeat" autocomplete="new-password" minlength="10" required>
+    <div class="actions"><button class="primary" type="submit">Create admin</button></div>
+  </form>
+</div>
+{% endblock %}

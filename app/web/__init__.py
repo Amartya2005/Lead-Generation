@@ -97,6 +97,19 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
     def get_cfg() -> Config:
         return cfg if cfg is not None else cache.get()
 
+    def setup_code() -> str | None:
+        """One-time code for creating the first admin, only while no logins exist.
+        Written to the server log (visible only to whoever runs the deployment)."""
+        if db.scalar("SELECT count(*) FROM users"):
+            return None
+        db.execute("INSERT INTO kv(key, value, updated_at) VALUES ('setup_code', ?, ?) ON CONFLICT(key) DO NOTHING",
+                   ("-".join(secrets.token_hex(3) for _ in range(3)), now()))
+        return db.kv_get("setup_code") or None
+
+    code = setup_code()
+    if code:
+        log.warning("No logins exist yet. SETUP CODE: %s  (open /setup on the site to create the first admin)", code)
+
     # ------------------------------------------------------------ helpers
     @app.before_request
     def load_user():
@@ -114,7 +127,7 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
             else:
                 session.clear()
         if (g.user and g.user["must_change"] and request.method == "GET"
-                and request.endpoint not in ("account", "static", "healthz", "api_tick")):
+                and request.endpoint not in ("account", "static", "healthz", "api_tick", "setup")):
             flash("Please choose your own password before continuing.", "warn")
             return redirect(url_for("account"))
         if request.method == "POST" and request.endpoint not in ("static",):
@@ -218,7 +231,40 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
             session["csrf"] = secrets.token_urlsafe(32)
             nxt = request.args.get("next") or ""
             return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else url_for("dashboard"))
-        return render_template("login.html")
+        return render_template("login.html", first_run=not db.scalar("SELECT count(*) FROM users"))
+
+    @app.route("/setup", methods=["GET", "POST"])
+    def setup():
+        from werkzeug.security import generate_password_hash
+
+        expected = setup_code()
+        if not expected:
+            abort(404)
+        if request.method == "POST":
+            if db.recent_login_failures("__setup__", 15) >= 5:
+                flash("Too many wrong codes. Try again in 15 minutes.", "error")
+                return render_template("setup.html", members=g.cfg.active_members), 429
+            member = g.cfg.member(request.form.get("member", ""))
+            pw, repeat = request.form.get("password", ""), request.form.get("repeat", "")
+            if not hmac.compare_digest(request.form.get("code", "").strip(), expected):
+                db.record_login("__setup__", False, request.remote_addr)
+                flash("Wrong setup code. It's in the server log.", "error")
+            elif not member:
+                flash("Pick a team member.", "error")
+            elif len(pw) < 10 or pw != repeat:
+                flash("Passwords must match and be at least 10 characters.", "error")
+            else:
+                db.upsert_user(member["id"], generate_password_hash(pw), is_admin=True)
+                db.kv_set("setup_code", "")
+                db.log(f"web:{member['id']}", "first_admin_created", None)
+                session.clear()
+                session.permanent = True
+                session["user"] = member["id"]
+                session["csrf"] = secrets.token_urlsafe(32)
+                flash("Admin login created. Add the rest of the team under Logins.", "ok")
+                return redirect(url_for("dashboard"))
+            return redirect(url_for("setup"))
+        return render_template("setup.html", members=g.cfg.active_members)
 
     @app.post("/logout")
     def logout():

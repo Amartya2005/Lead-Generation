@@ -278,3 +278,21 @@ def test_session_key_is_stable_across_instances(cfg, db, monkeypatch):
     a = create_app(dev=True, cfg=cfg, db=db).config["SECRET_KEY"]
     b = create_app(dev=True, cfg=cfg, db=db).config["SECRET_KEY"]
     assert a and a == b
+
+
+def test_first_admin_setup_with_code(cfg, db, caplog):
+    import logging
+
+    from app.web import create_app
+
+    with caplog.at_level(logging.WARNING):
+        client = create_app(dev=True, cfg=cfg, db=db).test_client()
+    code = re.search(r"SETUP CODE: (\S+)", caplog.text).group(1)
+    assert "Create the admin login" in client.get("/login").get_data(as_text=True)
+    form = {"csrf": _csrf(client, "/setup"), "member": "amartya", "password": PW, "repeat": PW}
+    client.post("/setup", data={**form, "code": "wrong-code"})
+    assert not db.get_user("amartya")
+    r = client.post("/setup", data={**form, "code": code})
+    assert r.status_code == 302 and db.get_user("amartya")["is_admin"]
+    assert client.get("/").status_code == 200          # signed in
+    assert client.get("/setup").status_code == 404     # gone once a login exists

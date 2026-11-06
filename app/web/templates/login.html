@@ -12,5 +12,6 @@
     <input id="p" type="password" name="password" autocomplete="current-password" required>
     <div class="actions"><button class="primary" type="submit">Sign in</button></div>
   </form>
+  {% if first_run %}<p class="small muted">First time here? <a href="{{ url_for('setup') }}">Create the admin login</a>.</p>{% endif %}
 </div>
 {% endblock %}

@@ -24,6 +24,26 @@ Vercel has no long-running processes or persistent disk, so the design differs f
   `failed` and never retried automatically.
 * **No Playwright** on Vercel (too large). JavaScript-only sites are read without rendering.
 
+## Set up the database (any Supabase account)
+
+1. In Supabase: **New project** → name `focustrigger-leads`, region **South Asia (Mumbai)**. Use
+   *Generate a password* (letters and digits only, so it needs no URL-encoding) and save it.
+2. When the project is ready: **Connect** → **Transaction pooler** → copy the URI, e.g.
+   `postgresql://postgres.abcd1234:[YOUR-PASSWORD]@aws-1-ap-south-1.pooler.supabase.com:6543/postgres`,
+   and put your password in place of `[YOUR-PASSWORD]`.
+3. In Vercel → `focustrigger-leads` → Settings → Environment Variables, add `DATABASE_URL` with that
+   URI (type *Sensitive*, Production + Preview). Then Deployments → ⋯ → **Redeploy**.
+
+The app creates its tables on first start, turns on row-level security and revokes Supabase's API
+roles, so nothing is readable through Supabase's REST API.
+
+## First admin login
+
+While no logins exist, the app writes a one-time **SETUP CODE** to the function log (Vercel →
+Project → **Logs**, search `SETUP CODE`). Open `https://leads.focustriggerautomation.com/setup`,
+enter the code, pick yourself and choose a password. Add everyone else under **Logins**: each gets a
+temporary password and must change it at first sign-in.
+
 ## Environment variables (Vercel → Project → Settings → Environment Variables)
 
 | Name | Value |
