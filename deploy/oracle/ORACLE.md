@@ -43,6 +43,11 @@ Compute → Instances → **Create instance**:
 If you see **"Out of capacity"** for A1, try another availability domain or try again later. Otherwise
 choose **VM.Standard.E2.1.Micro** (AMD, 1 GB, also free); the setup script adds swap automatically.
 
+**Easiest: let the VM install itself.** Before clicking Create, open *Show advanced options →
+Management → Paste cloud-init script* and paste the whole of
+[`deploy/oracle/cloud-init.sh`](cloud-init.sh). On first boot it runs step 5 for you (about 10 minutes;
+log in `/var/log/leadgen-setup.log`), so you can skip straight to step 6 once DNS is set.
+
 Note the instance's **public IP**.
 
 ## 3. Open ports 80 and 443
