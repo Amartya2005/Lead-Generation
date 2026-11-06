@@ -224,6 +224,26 @@ class DB:
         for stmt in (s.strip() for s in INDEXES.split(";")):
             if stmt:
                 self.execute(stmt)
+        if self.pg:
+            self._lock_down_api_access()
+
+    TABLES = ("leads", "suppression", "events", "queries", "users", "login_failures", "http_cache", "kv", "leases")
+
+    def _lock_down_api_access(self) -> None:
+        """Supabase exposes the public schema over its REST API. Row-level security with no
+        policies blocks that API (the table owner, i.e. this app, is unaffected), and API roles
+        lose their grants. Safe to run on every start."""
+        for t in self.TABLES:
+            self.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
+        self.execute("""
+            DO $$ DECLARE r text; BEGIN
+              FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+                  EXECUTE format('REVOKE ALL ON leads, suppression, events, queries, users, login_failures, '
+                                 'http_cache, kv, leases FROM %I', r);
+                END IF;
+              END LOOP;
+            END $$""")
 
     def _columns(self, table: str) -> set[str]:
         if self.pg:
@@ -245,15 +265,17 @@ class DB:
     def execute(self, q: str, args: Iterable = ()):
         """Run a statement; returns the cursor (use .rowcount / .fetchall())."""
         args = tuple(_clean(a) for a in args)
+        # psycopg parses %-placeholders only when parameters are passed; pass None when there are none.
+        params = args if (args or not self.pg) else None
         with self._lock:
             try:
-                return self.conn.execute(self._sql(q), args)
+                return self.conn.execute(self._sql(q), params)
             except Exception as e:
                 if not self.pg or not _is_disconnect(e):
                     raise
                 # Serverless instances can be frozen long enough for the pooler to drop us.
                 self._connect()
-                return self.conn.execute(self._sql(q), args)
+                return self.conn.execute(self._sql(q), params)
 
     def query(self, q: str, args: Iterable = ()) -> list[Row]:
         return self.execute(q, args).fetchall()

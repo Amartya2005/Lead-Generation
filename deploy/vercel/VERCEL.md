@@ -29,8 +29,8 @@ Vercel has no long-running processes or persistent disk, so the design differs f
 | Name | Value |
 |---|---|
 | `DATABASE_URL` | Supabase pooler URL (transaction mode, port 6543), app role |
-| `WEB_SECRET_KEY` | random 64 hex chars (signs login sessions) |
-| `CRON_SECRET` | random; Vercel Cron sends it automatically |
+| `WEB_SECRET_KEY` | optional; if unset, a random key is generated once and kept in the database |
+| `CRON_SECRET` | optional; if set, Vercel Cron sends it and only authorized calls can force a tick |
 | `GEMINI_API_KEY` | Google AI Studio key |
 | `LLM_PROVIDER` | `gemini` |
 | `SMTP_USER`, `IMAP_USER` | `focustriggerautomation@gmail.com` |

@@ -54,13 +54,17 @@ class _ConfigCache:
         return self._cfg
 
 
-def _secret_key(cfg: Config) -> str:
+def _secret_key(cfg: Config, db: DB) -> str:
+    """WEB_SECRET_KEY if set. Otherwise a random key generated once and stored with the
+    data: in the database on Postgres (shared by all serverless instances), else in a
+    file next to the SQLite database."""
     key = os.getenv("WEB_SECRET_KEY", "").strip()
     if key:
         return key
-    if os.getenv("VERCEL") or os.getenv("DATABASE_URL"):
-        raise RuntimeError("WEB_SECRET_KEY must be set on serverless/hosted deployments")
-    # Persist a generated key next to the database so all workers and restarts share it.
+    if db.pg:
+        db.execute("INSERT INTO kv(key, value, updated_at) VALUES ('web_secret', ?, ?) ON CONFLICT(key) DO NOTHING",
+                   (secrets.token_hex(32), now()))
+        return db.kv_get("web_secret")
     path = cfg.path(cfg.settings["storage"]["db_path"]).with_name(".web_secret")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -81,7 +85,7 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
     app = Flask(__name__)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # behind Caddy
     app.config.update(
-        SECRET_KEY=_secret_key(cfg0),
+        SECRET_KEY=_secret_key(cfg0, db),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=not dev and os.getenv("WEB_COOKIE_SECURE", "true").lower() != "false",

@@ -269,3 +269,12 @@ def test_admin_creates_login_with_temp_password(client, cfg, db):
 def test_members_cannot_manage_logins(client, cfg, db):
     _login(client, "priya")
     assert client.get("/admin/users").status_code == 403
+
+
+def test_session_key_is_stable_across_instances(cfg, db, monkeypatch):
+    from app.web import create_app
+
+    monkeypatch.delenv("WEB_SECRET_KEY", raising=False)
+    a = create_app(dev=True, cfg=cfg, db=db).config["SECRET_KEY"]
+    b = create_app(dev=True, cfg=cfg, db=db).config["SECRET_KEY"]
+    assert a and a == b
