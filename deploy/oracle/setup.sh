@@ -95,7 +95,7 @@ echo "at $(git -C "$PREFIX/app" log --oneline -1)"
 step "Python environment"
 [[ -x "$PREFIX/venv/bin/python" ]] || sudo -u "$APP_USER" python3 -m venv "$PREFIX/venv"
 sudo -u "$APP_USER" "$PREFIX/venv/bin/pip" install --quiet --upgrade pip
-sudo -u "$APP_USER" "$PREFIX/venv/bin/pip" install --quiet -r "$PREFIX/app/requirements.txt"
+sudo -u "$APP_USER" "$PREFIX/venv/bin/pip" install --quiet -r "$PREFIX/app/requirements-full.txt"
 
 step "Playwright Chromium (JS-site fallback; optional)"
 if "$PREFIX/venv/bin/playwright" install-deps chromium >/dev/null 2>&1 \

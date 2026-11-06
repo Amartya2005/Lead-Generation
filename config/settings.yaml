@@ -44,6 +44,13 @@ email:
   max_words: 120
   use_llm: true               # false = deterministic template only
 
+tick:
+  # Serverless mode (Vercel): each GET /api/tick does this much work, then stops.
+  budget_seconds: 240          # keep below the function's maxDuration (300 in vercel.json)
+  min_interval_seconds: 240    # extra calls inside this window are ignored
+  inbox_every_seconds: 7200
+  reserve_seconds: 45
+
 web:
   # Review page (python main.py web, or gunicorn on the server). Secrets: WEB_SECRET_KEY in .env.
   login_max_failures: 5        # per username, then locked for lockout_minutes

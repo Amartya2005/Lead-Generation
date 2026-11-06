@@ -24,7 +24,9 @@ research ─▶ enrich ─▶ qualify ─▶ match ─▶ write ──▶ [human
 ```
 Lead-Generation/
 ├── main.py                    # CLI: run / review / send / web / report / sync-inbox / ...
-├── requirements.txt
+├── requirements.txt           # runtime deps (what Vercel installs)
+├── requirements-full.txt      # + LangGraph, Playwright, gunicorn, pytest (laptop / VM)
+├── vercel.json  api/index.py  # Vercel entry point (review page + /api/tick)
 ├── .env.example               # copy to .env
 ├── config/
 │   ├── settings.yaml          # LLM, crawl, limits, send window, storage
@@ -55,6 +57,7 @@ Lead-Generation/
 │   ├── oracle/setup.sh        # one-command server install (idempotent)
 │   ├── oracle/update.sh       # backup, pull, test, restart
 │   ├── oracle/ORACLE.md       # step-by-step Oracle Cloud guide
+│   ├── vercel/VERCEL.md       # Vercel + Supabase deployment
 │   └── systemd/               # web service + run/send/inbox/backup timers
 ├── data/leads.db              # created on first run
 ├── output/leads.csv           # per-lead report
@@ -74,7 +77,7 @@ python -m venv .venv && source .venv/bin/activate
 (Windows: `.venv\Scripts\activate`)
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-full.txt
 ```
 
 ```bash
@@ -255,6 +258,15 @@ Then open http://127.0.0.1:8000.
 Security: hashed passwords, a CSRF token on every form, Secure/HttpOnly/SameSite session cookies,
 lockout after 5 failed logins, a strict Content-Security-Policy, and an audit trail in each lead's
 history (`web:<user> approved`).
+
+## Deploy on Vercel + Supabase
+
+The live deployment for FocusTrigger is at **https://leads.focustriggerautomation.com**: the review
+page and a `/api/tick` endpoint on Vercel, a Postgres database on Supabase, and a GitHub Actions
+schedule as the clock. See **[deploy/vercel/VERCEL.md](deploy/vercel/VERCEL.md)**.
+
+To run the tests against Postgres as well as SQLite, set `TEST_DATABASE_URL` (and
+`TEST_DATABASE_ADMIN_URL` for a role that can recreate the `leadgen` schema).
 
 ## Deploy (Oracle Cloud Always Free)
 

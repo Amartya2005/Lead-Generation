@@ -1,0 +1,10 @@
+# Not needed on Vercel (the CLI, VM deployment, tests and local data).
+main.py
+tests/
+deploy/
+data/
+output/
+logs/
+.env
+*.db
+.pytest_cache/

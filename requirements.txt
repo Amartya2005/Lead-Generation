@@ -1,5 +1,4 @@
-# Core (all free / open source)
-langgraph>=0.2,<2
+# Runtime dependencies (this is what Vercel installs). For a laptop or VM use requirements-full.txt.
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0
@@ -8,13 +7,5 @@ python-dotenv>=1.0
 rich>=13.0
 ddgs>=9.0            # DuckDuckGo search (free, no key)
 tldextract>=5.0
-playwright>=1.45     # JS-rendering fallback; run `playwright install chromium` once
 flask>=3.0           # web review page
-gunicorn>=22.0; platform_system != "Windows"   # production server for the review page
-
-# Optional: Google Sheets export (free with a Google service account)
-# gspread>=6.0
-# google-auth>=2.0
-
-# Dev
-pytest>=8.0
+psycopg[binary]>=3.1 # Postgres (DATABASE_URL), used on Vercel

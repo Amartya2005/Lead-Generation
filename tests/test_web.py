@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 
 import pytest
+
+from tests.conftest import requires_sqlite
 from werkzeug.security import generate_password_hash
 
 PW = "correct horse battery"
@@ -186,6 +188,7 @@ def test_portfolio_owner_must_exist(tmp_path, monkeypatch, cfg):
         Config(env_file=tmp_path / "none.env")
 
 
+@requires_sqlite
 def test_sender_lock_prevents_parallel_runs(cfg, db):
     from app.agents.sender import SenderAgent
     from app.tools.locks import exclusive
@@ -195,6 +198,7 @@ def test_sender_lock_prevents_parallel_runs(cfg, db):
         assert SenderAgent(cfg, db).run(ignore_window=True)["skipped"] == "already running"
 
 
+@requires_sqlite
 def test_backup(cfg, db, tmp_path):
     import sqlite3
 
@@ -213,3 +217,55 @@ def test_web_user_cli(cfg, db, monkeypatch):
         main.main(["web-user", "add", "stranger", "--password", "long-enough-pw"])
     with pytest.raises(SystemExit):
         main.main(["web-user", "add", "priya", "--password", "short"])
+
+
+def test_lock_is_exclusive_and_released(db):
+    from app.db import AlreadyRunning
+
+    with db.lock("tick", ttl_seconds=60):
+        with pytest.raises(AlreadyRunning):
+            with db.lock("tick", ttl_seconds=60):
+                pass
+    with db.lock("tick", ttl_seconds=60):  # released after the block
+        pass
+
+
+def test_claim_lead_only_once(cfg, db):
+    lead_id = _draft(cfg, db, status="approved")
+    assert db.claim_lead(lead_id, "approved", "sending") is True
+    assert db.claim_lead(lead_id, "approved", "sending") is False
+
+
+def test_kv_and_nul_bytes(db):
+    db.kv_set("next_send_at", "2026-01-01T00:00:00+00:00")
+    db.kv_set("next_send_at", "2026-01-02T00:00:00+00:00")
+    assert db.kv_get("next_send_at").startswith("2026-01-02")
+    lead_id = db.add_lead(company="Nul\x00 Co", domain="nul.in", snippet="a\x00b")
+    assert db.get_lead(lead_id)["snippet"] == "ab"
+
+
+def test_temporary_password_must_be_changed(client, cfg, db):
+    db.upsert_user("priya", generate_password_hash(PW), is_admin=False, must_change=True)
+    _login(client, "priya")
+    r = client.get("/")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/account")
+    token = _csrf(client, "/account")
+    client.post("/account", data={"csrf": token, "current": PW, "new": "a brand new pass", "repeat": "a brand new pass"})
+    assert not db.get_user("priya")["must_change"]
+    assert client.get("/").status_code == 200
+
+
+def test_admin_creates_login_with_temp_password(client, cfg, db):
+    db.delete_user("priya")
+    _login(client)
+    r = client.post("/admin/users", data={"csrf": _csrf(client, "/admin/users"), "username": "priya",
+                                          "action": "create"}, follow_redirects=True)
+    temp = re.search(r"Temporary password for Priya Das: (\S+)", r.get_data(as_text=True)).group(1)
+    assert db.get_user("priya")["must_change"]
+    client.post("/logout", data={"csrf": _csrf(client, "/")})
+    assert _login(client, "priya", temp).status_code == 302
+
+
+def test_members_cannot_manage_logins(client, cfg, db):
+    _login(client, "priya")
+    assert client.get("/admin/users").status_code == 403

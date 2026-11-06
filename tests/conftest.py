@@ -42,9 +42,23 @@ def cfg(tmp_path, monkeypatch):
     return config_mod.Config(env_file=tmp_path / "missing.env")
 
 
+PG_URL = __import__("os").getenv("TEST_DATABASE_URL", "")  # e.g. postgresql://leadgen_app:pw@localhost/leadtest
+PG_ADMIN_URL = __import__("os").getenv("TEST_DATABASE_ADMIN_URL", "")
+requires_sqlite = pytest.mark.skipif(bool(PG_URL), reason="SQLite-specific")
+
+
 @pytest.fixture()
 def db(cfg):
+    """SQLite by default; set TEST_DATABASE_URL to run the same tests against Postgres."""
     from app.db import DB
-    return DB(cfg.settings["storage"]["db_path"])
+
+    if not PG_URL:
+        return DB(cfg.settings["storage"]["db_path"])
+    import psycopg
+
+    with psycopg.connect(PG_ADMIN_URL or PG_URL, autocommit=True) as c:
+        c.execute("DROP SCHEMA IF EXISTS leadgen CASCADE")
+        c.execute("CREATE SCHEMA leadgen AUTHORIZATION leadgen_app")
+    return DB(PG_URL)
 
 

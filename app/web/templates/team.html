@@ -26,6 +26,10 @@
       <td>{% if p.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed</span>{% endif %}</td></tr>
     {% endfor %}
   </table>
+  {% if on_vercel %}
+  <p class="small muted">Edit <code>config/team.yaml</code> and <code>config/portfolio.yaml</code> on GitHub. Each commit redeploys the site in about a minute.</p>
+  {% else %}
   <p class="small muted">Edit team and portfolio in <code>/opt/leadgen/config/team.yaml</code> and <code>portfolio.yaml</code> on the server. Changes apply without a restart.</p>
+  {% endif %}
 </div>
 {% endblock %}

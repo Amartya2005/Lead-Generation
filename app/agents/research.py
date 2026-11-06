@@ -105,10 +105,14 @@ class ResearchAgent:
         return None
 
     # ---------------------------------------------------------------- run
-    def run_search(self, budget: int) -> int:
+    def run_search(self, budget: int, queries: list[str] | None = None, deadline: float | None = None) -> int:
+        """deadline: time.monotonic() value after which no new search is started (serverless ticks)."""
+        import time as _time
+
+        out_of_time = lambda: deadline is not None and _time.monotonic() > deadline  # noqa: E731
         added = 0
-        for q in self.build_queries():
-            if added >= budget:
+        for q in (self.build_queries() if queries is None else queries):
+            if added >= budget or out_of_time():
                 break
             try:
                 results = self.search.search(q, self.per_query)
@@ -126,7 +130,7 @@ class ResearchAgent:
                     if not name:
                         continue
                     site = None
-                    if self.resolve_dirs:
+                    if self.resolve_dirs and not out_of_time():
                         try:
                             site = self._resolve_website(name, self.geo.city_from_query(q))
                         except SearchRateLimited:

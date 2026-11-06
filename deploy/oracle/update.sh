@@ -12,7 +12,7 @@ echo "==> pulling latest code"
 sudo -u leadgen git -C "$PREFIX/app" pull --ff-only
 
 echo "==> installing dependencies"
-sudo -u leadgen "$PREFIX/venv/bin/pip" install --quiet -r "$PREFIX/app/requirements.txt"
+sudo -u leadgen "$PREFIX/venv/bin/pip" install --quiet -r "$PREFIX/app/requirements-full.txt"
 
 echo "==> running the test suite before switching over"
 if ! sudo -u leadgen env LEADGEN_ENV_FILE=/dev/null "$PREFIX/venv/bin/python" -m pytest -q "$PREFIX/app/tests" -p no:cacheprovider; then

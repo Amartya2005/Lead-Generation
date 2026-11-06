@@ -1,0 +1,10 @@
+# Everything: laptop / VM installs. (Vercel installs only requirements.txt.)
+-r requirements.txt
+langgraph>=0.2,<2
+playwright>=1.45     # JS-rendering fallback; run `playwright install chromium` once
+gunicorn>=22.0; platform_system != "Windows"   # production server for the review page
+pytest>=8.0
+
+# Optional: Google Sheets export (free with a Google service account)
+# gspread>=6.0
+# google-auth>=2.0

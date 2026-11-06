@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from app.config import Config, setup_logging
-from app.db import DB
+from app.db import DB, open_db
 
 console = Console()
 
@@ -29,7 +29,7 @@ console = Console()
 def _ctx(args) -> tuple[Config, DB]:
     cfg = Config()
     setup_logging(cfg, verbose=getattr(args, "verbose", False))
-    return cfg, DB(cfg.path(cfg.settings["storage"]["db_path"]))
+    return cfg, open_db(cfg)
 
 
 def _print_results(results: dict) -> None:
@@ -283,7 +283,10 @@ def cmd_web_user(args) -> None:
 def cmd_backup(args) -> None:
     cfg, db = _ctx(args)
     st = cfg.settings["storage"]
-    dest = db.backup(cfg.path(st.get("backup_dir", "data/backups")), int(st.get("backup_keep_days", 14)))
+    try:
+        dest = db.backup(cfg.path(st.get("backup_dir", "data/backups")), int(st.get("backup_keep_days", 14)))
+    except RuntimeError as e:
+        sys.exit(str(e))
     console.print(f"Backup written: {dest}")
 
 

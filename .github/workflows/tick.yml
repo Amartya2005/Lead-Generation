@@ -1,0 +1,28 @@
+# The clock for the Vercel deployment: Vercel's free plan only runs cron once a day,
+# so this calls /api/tick every 10 minutes, 07:30-20:20 IST, Mon-Sat.
+# The endpoint returns counts only, so nothing about leads appears in these public logs.
+# Optional: add a repository secret CRON_SECRET (same value as on Vercel) to
+# authenticate; without it the call still works, and the server enforces the spacing.
+name: tick
+on:
+  schedule:
+    - cron: "*/10 2-14 * * 1-6"
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: tick
+  cancel-in-progress: false
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Call /api/tick
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TICK_URL: https://leads.focustriggerautomation.com/api/tick
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 320 \
+            ${CRON_SECRET:+-H "Authorization: Bearer $CRON_SECRET"} "$TICK_URL")
+          echo "HTTP $code"
+          [ "$code" = "200" ]

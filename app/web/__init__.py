@@ -27,7 +27,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.config import Config, _config_dirs
-from app.db import DB, loads, now
+from app.db import DB, loads, now, open_db
 
 log = logging.getLogger("web")
 STATUS_TABS = ["drafted", "approved", "needs_contact", "sent", "replied", "bounced", "rejected", "discarded"]
@@ -58,6 +58,8 @@ def _secret_key(cfg: Config) -> str:
     key = os.getenv("WEB_SECRET_KEY", "").strip()
     if key:
         return key
+    if os.getenv("VERCEL") or os.getenv("DATABASE_URL"):
+        raise RuntimeError("WEB_SECRET_KEY must be set on serverless/hosted deployments")
     # Persist a generated key next to the database so all workers and restarts share it.
     path = cfg.path(cfg.settings["storage"]["db_path"]).with_name(".web_secret")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,7 +75,7 @@ def _secret_key(cfg: Config) -> str:
 def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = None) -> Flask:
     cache = _ConfigCache()
     cfg0 = cfg or cache.get()
-    db = db or DB(cfg0.path(cfg0.settings["storage"]["db_path"]))
+    db = db or open_db(cfg0)
     web = cfg0.settings.get("web", {})
 
     app = Flask(__name__)
@@ -103,9 +105,14 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
             row = db.get_user(username)
             member = g.cfg.member(username) if row else None
             if row and member and member["id"] == username:
-                g.user = {"username": username, "is_admin": bool(row["is_admin"]), "member": member}
+                g.user = {"username": username, "is_admin": bool(row["is_admin"]), "member": member,
+                          "must_change": bool(row["must_change"])}
             else:
                 session.clear()
+        if (g.user and g.user["must_change"] and request.method == "GET"
+                and request.endpoint not in ("account", "static", "healthz", "api_tick")):
+            flash("Please choose your own password before continuing.", "warn")
+            return redirect(url_for("account"))
         if request.method == "POST" and request.endpoint not in ("static",):
             sent = request.form.get("csrf", "")
             if not sent or not hmac.compare_digest(sent, session.get("csrf", "")):
@@ -164,8 +171,25 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
     # ------------------------------------------------------------- routes
     @app.get("/healthz")
     def healthz():
-        db.conn.execute("SELECT 1")
+        db.scalar("SELECT 1")
         return "ok", 200, {"Content-Type": "text/plain"}
+
+    @app.get("/api/tick")
+    def api_tick():
+        """Scheduler entry point (GitHub Actions / Vercel Cron). Returns counts only.
+
+        Without the CRON_SECRET bearer token a call is still accepted, but it can't force
+        a tick: the database enforces the minimum spacing, so extra calls do nothing."""
+        from app.tick import tick
+
+        secret = os.getenv("CRON_SECRET", "")
+        auth = request.headers.get("Authorization", "")
+        authorized = bool(secret) and hmac.compare_digest(auth, f"Bearer {secret}")
+        if os.getenv("TICK_REQUIRE_SECRET", "").lower() == "true" and not authorized:
+            abort(401)
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+        result = tick(g.cfg, db, force=authorized and request.args.get("force") == "1")
+        return result, 200
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -204,8 +228,8 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
 
         c = g.cfg
         counts = db.status_counts()
-        mine = db.conn.execute("SELECT count(*) FROM leads WHERE status='drafted' AND sender_id=?",
-                               (g.user["username"],)).fetchone()[0]
+        mine = db.scalar("SELECT count(*) FROM leads WHERE status='drafted' AND sender_id=?",
+                         (g.user["username"],))
         sender = SenderAgent(c, db)
         mailboxes = {}
         for m in c.members:
@@ -239,10 +263,10 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
             sql += " AND sender_id=?"
             args.append(g.user["username"])
         if q:
-            sql += " AND (company LIKE ? OR domain LIKE ? OR city LIKE ?)"
-            args += [f"%{q}%"] * 3
-        sql += " ORDER BY score DESC, id DESC LIMIT 200"
-        rows = db.conn.execute(sql, args).fetchall()
+            sql += " AND (lower(company) LIKE ? OR lower(domain) LIKE ? OR lower(city) LIKE ?)"
+            args += [f"%{q.lower()}%"] * 3
+        sql += " ORDER BY score DESC NULLS LAST, id DESC LIMIT 200"
+        rows = db.query(sql, args)
         return render_template("leads.html", rows=rows, status=status, who=who, q=q, tabs=STATUS_TABS,
                                counts=db.status_counts())
 
@@ -374,9 +398,10 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
         return redirect(url_for("lead_detail", lead_id=lead_id))
 
     def _next_draft_url(after_id: int) -> str:
-        row = db.conn.execute(
-            "SELECT id FROM leads WHERE status='drafted' AND id<>? AND (sender_id=? OR ?) ORDER BY score DESC, id LIMIT 1",
-            (after_id, g.user["username"], int(g.user["is_admin"]))).fetchone()
+        row = db.one(
+            "SELECT id FROM leads WHERE status='drafted' AND id<>? AND (sender_id=? OR 1=?) "
+            "ORDER BY score DESC NULLS LAST, id LIMIT 1",
+            (after_id, g.user["username"], int(g.user["is_admin"])))
         return url_for("lead_detail", lead_id=row["id"]) if row else url_for("leads", status="drafted")
 
     @app.route("/suppression", methods=["GET", "POST"])
@@ -403,7 +428,67 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
             mb = c.mailbox(m)
             rows.append({"m": m, "from": f"{c.from_name(m)} <{mb['from_email']}>", "mailbox": mb["id"],
                          "creds": bool(mb["smtp_user"] and mb["smtp_password"]), "user": users.get(m["id"])})
-        return render_template("team.html", rows=rows, portfolio=c.portfolio, team=c.team)
+        return render_template("team.html", rows=rows, portfolio=c.portfolio, team=c.team,
+                               on_vercel=bool(os.getenv("VERCEL")))
+
+    @app.route("/account", methods=["GET", "POST"])
+    @login_required
+    def account():
+        from werkzeug.security import generate_password_hash
+
+        if request.method == "POST":
+            row = db.get_user(g.user["username"])
+            current, new, repeat = (request.form.get(k, "") for k in ("current", "new", "repeat"))
+            if not check_password_hash(row["password_hash"], current):
+                flash("Current password is wrong.", "error")
+            elif len(new) < 10:
+                flash("Use at least 10 characters.", "error")
+            elif new != repeat:
+                flash("The new passwords don't match.", "error")
+            elif new == current:
+                flash("Choose a password different from the current one.", "error")
+            else:
+                db.set_password(g.user["username"], generate_password_hash(new), must_change=False)
+                db.log(actor(), "password_changed", None)
+                flash("Password changed.", "ok")
+                return redirect(url_for("dashboard"))
+            return redirect(url_for("account"))
+        return render_template("account.html")
+
+    @app.route("/admin/users", methods=["GET", "POST"])
+    @admin_required
+    def admin_users():
+        from werkzeug.security import generate_password_hash
+
+        if request.method == "POST":
+            action, username = request.form.get("action"), request.form.get("username", "")
+            member = g.cfg.member(username)
+            if not member or member["id"] != username:
+                abort(400, "Not a member in team.yaml.")
+            if action in ("create", "reset"):
+                temp = "-".join(secrets.token_urlsafe(4) for _ in range(3))
+                existing = db.get_user(username)
+                is_admin = bool(request.form.get("is_admin")) if action == "create" else bool(existing and existing["is_admin"])
+                db.upsert_user(username, generate_password_hash(temp), is_admin, must_change=True)
+                db.log(actor(), f"user_{action}", None, username)
+                flash(f"Temporary password for {member['name']}: {temp}  (share it privately; "
+                      "they must change it at first sign-in)", "ok")
+            elif action == "toggle_admin":
+                if username == g.user["username"]:
+                    abort(400, "You can't change your own admin role.")
+                row = db.get_user(username)
+                if row:
+                    db.upsert_user(username, row["password_hash"], not row["is_admin"], bool(row["must_change"]))
+                    db.log(actor(), "user_role", None, username)
+            elif action == "remove":
+                if username == g.user["username"]:
+                    abort(400, "You can't remove your own login.")
+                db.delete_user(username)
+                db.log(actor(), "user_removed", None, username)
+                flash("Login removed.", "ok")
+            return redirect(url_for("admin_users"))
+        users = {u["username"]: u for u in db.list_users()}
+        return render_template("users.html", members=g.cfg.members, users=users)
 
     @app.errorhandler(400)
     @app.errorhandler(403)

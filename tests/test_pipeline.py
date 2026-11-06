@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import requires_sqlite
+
 FIX = Path(__file__).parent / "fixtures"
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -392,6 +394,7 @@ def test_llm_falls_back_to_next_model_on_503(cfg, monkeypatch):
     assert calls[0] == "gemini-3.8-flash" and calls[1] == "gemini-flash-latest"
 
 
+@requires_sqlite
 def test_db_migrates_old_schema(tmp_path):
     import sqlite3
     from app.db import DB
@@ -403,5 +406,5 @@ def test_db_migrates_old_schema(tmp_path):
     c.commit()
     c.close()
     db = DB(path)
-    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(leads)")}
+    cols = {r[1] for r in db.query("PRAGMA table_info(leads)")}
     assert {"sender_id", "sent_from"} <= cols

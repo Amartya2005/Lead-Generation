@@ -141,98 +141,150 @@ class SenderAgent:
 
     # --------------------------------------------------------------- run
     def run(self, ignore_window: bool = False, limit: int | None = None) -> dict:
-        from app.tools.locks import AlreadyRunning, exclusive
+        from app.db import AlreadyRunning
 
-        lock = self.cfg.path(self.cfg.settings["storage"]["db_path"]).with_suffix(".send.lock")
         try:
-            with exclusive(lock):
+            with self.db.lock("send", ttl_seconds=4 * 3600):
                 return self._run(ignore_window, limit)
         except AlreadyRunning:
             log.warning("Another send is already running; not starting a second one.")
             return {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0, "skipped": "already running"}
 
+    def _queue(self) -> list:
+        statuses = ("approved",) if self.approval else ("approved", "drafted")
+        return [l for l in self.db.leads_by_status(*statuses)
+                if not self.only_member or (l["sender_id"] or self.cfg.team["default_member"]) == self.only_member]
+
+    def _attempt(self, lead_id: int, used: dict[str, int], dead: set[str]) -> str:
+        """Try to send one lead. Returns 'sent' | 'dry_run' | 'blocked' | 'failed' | 'skipped'."""
+        statuses = ("approved",) if self.approval else ("approved", "drafted")
+        lead = self.db.get_lead(lead_id)  # re-read: a reviewer may have changed it meanwhile
+        if not lead or lead["status"] not in statuses:
+            return "skipped"
+        try:
+            member, mailbox = self.check(lead)
+            if mailbox["id"] in dead:
+                raise SendBlocked(f"mailbox '{mailbox['id']}' login failed earlier in this run")
+            used.setdefault(mailbox["id"], self.sent_last_24h(mailbox["id"]))
+            if used[mailbox["id"]] >= self.daily_limit:
+                raise SendBlocked(f"daily limit reached for mailbox '{mailbox['id']}' ({self.daily_limit}/24h)")
+        except SendBlocked as e:
+            self.db.log(self.name, "blocked", lead["id"], str(e))
+            if str(e).startswith("suppressed"):
+                self.db.update_lead(lead["id"], status="suppressed", error=str(e))
+            log.info("Blocked %-30s %s", lead["company"][:30], e)
+            return "blocked"
+
+        msg = self.build_message(lead, member, mailbox)
+        if self.dry_run:
+            used[mailbox["id"]] += 1
+            self.db.log(self.name, "dry_run", lead["id"],
+                        {"to": lead["email"], "from": msg["From"], "subject": msg["Subject"]})
+            log.info("[DRY RUN] %s -> %s: %s", msg["From"], lead["email"], msg["Subject"])
+            return "dry_run"
+
+        # Claim it first, so a parallel sender (or a crash and retry) can never send it twice.
+        if not self.db.claim_lead(lead["id"], lead["status"], "sending"):
+            return "skipped"
+        try:
+            self._smtp_for(mailbox).send_message(msg)
+        except smtplib.SMTPRecipientsRefused as e:
+            self.db.update_lead(lead["id"], status="bounced", error=str(e)[:300])
+            self.db.suppress(lead["email"], "email", "bounced")
+            self.db.log(self.name, "bounced", lead["id"], str(e)[:300])
+            return "failed"
+        except (smtplib.SMTPException, OSError) as e:
+            self.db.update_lead(lead["id"], status="failed", error=str(e)[:300])
+            self.db.log(self.name, "failed", lead["id"], str(e)[:300])
+            log.error("Send failed for %s via %s: %s", lead["email"], mailbox["id"], e)
+            self._smtp.pop(mailbox["id"], None)
+            if isinstance(e, smtplib.SMTPAuthenticationError):
+                dead.add(mailbox["id"])
+            return "failed"
+
+        used[mailbox["id"]] += 1
+        self.db.update_lead(lead["id"], status="sent", sent_from=mailbox["id"], sender_id=member["id"],
+                            sent_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            message_id=msg["Message-ID"], error=None)
+        self.db.suppress(lead["email"], "email", "emailed")
+        self.db.log(self.name, "sent", lead["id"], {"to": lead["email"], "from": msg["From"], "subject": msg["Subject"]})
+        log.info("Sent %s -> %s (%s)", msg["From"], lead["email"], lead["company"])
+        return "sent"
+
+    def _close(self) -> None:
+        for smtp in self._smtp.values():
+            try:
+                smtp.quit()
+            except Exception:
+                pass
+        self._smtp.clear()
+
     def _run(self, ignore_window: bool, limit: int | None) -> dict:
+        """Long-running mode (VM / CLI): send the queue with random delays in between."""
         counts = {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0}
         if not ignore_window and not self.in_window():
             log.warning("Outside the send window %s; nothing sent. Use --ignore-window to override.", self.window)
             return counts
-        statuses = ("approved",) if self.approval else ("approved", "drafted")
-        queue = [l for l in self.db.leads_by_status(*statuses)
-                 if not self.only_member or (l["sender_id"] or self.cfg.team["default_member"]) == self.only_member]
+        queue = self._queue()
         budget = limit if limit is not None else len(queue)
         used: dict[str, int] = {}          # mailbox id -> sent in last 24h (incl. this run)
         dead: set[str] = set()             # mailboxes that failed to log in
         log.info("%d approved emails queued (daily limit %d per mailbox)%s", len(queue), self.daily_limit,
                  " [DRY RUN]" if self.dry_run else "")
-
         try:
             for i, queued in enumerate(queue):
                 if counts["sent"] + counts["dry_run"] >= budget:
                     break
-                lead = self.db.get_lead(queued["id"])  # re-read: a reviewer may have changed it meanwhile
-                if lead["status"] not in statuses:
-                    continue
-                try:
-                    member, mailbox = self.check(lead)
-                    if mailbox["id"] in dead:
-                        raise SendBlocked(f"mailbox '{mailbox['id']}' login failed earlier in this run")
-                    used.setdefault(mailbox["id"], self.sent_last_24h(mailbox["id"]))
-                    if used[mailbox["id"]] >= self.daily_limit:
-                        raise SendBlocked(f"daily limit reached for mailbox '{mailbox['id']}' ({self.daily_limit}/24h)")
-                except SendBlocked as e:
-                    counts["blocked"] += 1
-                    self.db.log(self.name, "blocked", lead["id"], str(e))
-                    if str(e).startswith("suppressed"):
-                        self.db.update_lead(lead["id"], status="suppressed", error=str(e))
-                    log.info("Blocked %-30s %s", lead["company"][:30], e)
-                    continue
-
-                msg = self.build_message(lead, member, mailbox)
-                if self.dry_run:
-                    counts["dry_run"] += 1
-                    used[mailbox["id"]] += 1
-                    self.db.log(self.name, "dry_run", lead["id"],
-                                {"to": lead["email"], "from": msg["From"], "subject": msg["Subject"]})
-                    log.info("[DRY RUN] %s -> %s: %s", msg["From"], lead["email"], msg["Subject"])
-                    continue
-
-                try:
-                    self._smtp_for(mailbox).send_message(msg)
-                except smtplib.SMTPRecipientsRefused as e:
-                    self.db.update_lead(lead["id"], status="bounced", error=str(e)[:300])
-                    self.db.suppress(lead["email"], "email", "bounced")
-                    self.db.log(self.name, "bounced", lead["id"], str(e)[:300])
-                    counts["failed"] += 1
-                    continue
-                except (smtplib.SMTPException, OSError) as e:
-                    self.db.update_lead(lead["id"], status="failed", error=str(e)[:300])
-                    self.db.log(self.name, "failed", lead["id"], str(e)[:300])
-                    counts["failed"] += 1
-                    log.error("Send failed for %s via %s: %s", lead["email"], mailbox["id"], e)
-                    self._smtp.pop(mailbox["id"], None)
-                    if isinstance(e, smtplib.SMTPAuthenticationError):
-                        dead.add(mailbox["id"])
-                    continue
-
-                used[mailbox["id"]] += 1
-                self.db.update_lead(lead["id"], status="sent", sent_from=mailbox["id"], sender_id=member["id"],
-                                    sent_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                    message_id=msg["Message-ID"], error=None)
-                self.db.suppress(lead["email"], "email", "emailed")
-                self.db.log(self.name, "sent", lead["id"],
-                            {"to": lead["email"], "from": msg["From"], "subject": msg["Subject"]})
-                counts["sent"] += 1
-                log.info("Sent %s -> %s (%s)", msg["From"], lead["email"], lead["company"])
-
-                if counts["sent"] < budget and i < len(queue) - 1:
+                outcome = self._attempt(queued["id"], used, dead)
+                if outcome != "skipped":
+                    counts[outcome] += 1
+                if outcome == "sent" and counts["sent"] < budget and i < len(queue) - 1:
                     delay = random.uniform(self.min_delay, self.max_delay)
                     log.info("Waiting %.0fs before next send...", delay)
                     time.sleep(delay)
         finally:
-            for smtp in self._smtp.values():
-                try:
-                    smtp.quit()
-                except Exception:
-                    pass
-            self._smtp.clear()
+            self._close()
         return counts
+
+    def send_one(self, ignore_window: bool = False) -> dict:
+        """Serverless mode: send at most ONE email, then return. The gap before the next
+        send (random min..max delay) is stored in the database and enforced across calls."""
+        from app.db import AlreadyRunning
+
+        counts = {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0}
+        if not ignore_window and not self.in_window():
+            return {**counts, "skipped": "outside send window"}
+        next_at = self.db.kv_get("next_send_at")
+        now_utc = datetime.now(timezone.utc)
+        if next_at and datetime.fromisoformat(next_at) > now_utc:
+            return {**counts, "skipped": "waiting for random gap"}
+        try:
+            with self.db.lock("send", ttl_seconds=600):
+                used: dict[str, int] = {}
+                dead: set[str] = set()
+                try:
+                    for queued in self._queue():
+                        outcome = self._attempt(queued["id"], used, dead)
+                        if outcome != "skipped":
+                            counts[outcome] += 1
+                        if outcome in ("sent", "dry_run", "failed"):
+                            gap = random.uniform(self.min_delay, self.max_delay)
+                            self.db.kv_set("next_send_at", (datetime.now(timezone.utc) + timedelta(seconds=gap))
+                                           .isoformat(timespec="seconds"))
+                            break
+                finally:
+                    self._close()
+        except AlreadyRunning:
+            return {**counts, "skipped": "already running"}
+        return counts
+
+    def recover_stuck(self, minutes: int = 30) -> int:
+        """A lead left in 'sending' (process killed mid-send) is marked failed, never retried,
+        because we can't know whether the email went out. Check the Sent folder."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        rows = self.db.query("SELECT id FROM leads WHERE status='sending' AND updated_at<?", (cutoff,))
+        for r in rows:
+            self.db.update_lead(r["id"], status="failed",
+                                error="interrupted while sending; check the Sent folder before retrying")
+            self.db.log(self.name, "interrupted", r["id"])
+        return len(rows)

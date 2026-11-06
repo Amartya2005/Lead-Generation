@@ -16,6 +16,8 @@
     <a href="{{ url_for('leads', status='drafted') }}" class="{{ 'on' if request.endpoint in ('leads', 'lead_detail') }}">Drafts</a>
     <a href="{{ url_for('suppression') }}" class="{{ 'on' if request.endpoint == 'suppression' }}">Do-not-email</a>
     <a href="{{ url_for('team') }}" class="{{ 'on' if request.endpoint == 'team' }}">Team</a>
+    {% if user.is_admin %}<a href="{{ url_for('admin_users') }}" class="{{ 'on' if request.endpoint == 'admin_users' }}">Logins</a>{% endif %}
+    <a href="{{ url_for('account') }}" class="{{ 'on' if request.endpoint == 'account' }}">Account</a>
     <form method="post" action="{{ url_for('logout') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button type="submit" class="small">Sign out {{ user.member.name }}</button>

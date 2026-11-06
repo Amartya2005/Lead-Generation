@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Logins{% endblock %}
+{% block content %}
+<h1>Logins</h1>
+<p class="small muted">Everyone in <code>config/team.yaml</code> can get a login. New and reset logins get a temporary
+  password, shown once here; share it privately. They choose their own at first sign-in.</p>
+<div class="card scroll"><table>
+  <tr><th>Member</th><th>Login</th><th></th></tr>
+  {% for m in members %}{% set u = users.get(m.id) %}
+  <tr>
+    <td>{{ m.name }}<div class="small muted">{{ m.id }}{% if m.title %} · {{ m.title }}{% endif %}</div></td>
+    <td>{% if u %}{{ 'admin' if u.is_admin else 'member' }}{% if u.must_change %} <span class="chip">temporary password</span>{% endif %}
+        <div class="small muted">last sign-in {{ u.last_login_at|ago }}</div>{% else %}<span class="muted">none</span>{% endif %}</td>
+    <td><div class="actions" style="margin:0">
+      {% if not u %}
+      <form method="post" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="username" value="{{ m.id }}">
+        <label class="small" style="margin:0;font-weight:400"><input type="checkbox" name="is_admin" value="1"> admin</label>
+        <button type="submit" name="action" value="create">Create login</button></form>
+      {% else %}
+      <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="username" value="{{ m.id }}">
+        <button type="submit" name="action" value="reset">Reset password</button></form>
+      {% if m.id != user.username %}
+      <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="username" value="{{ m.id }}">
+        <button type="submit" name="action" value="toggle_admin">{{ 'Make member' if u.is_admin else 'Make admin' }}</button></form>
+      <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="username" value="{{ m.id }}">
+        <button type="submit" class="danger" name="action" value="remove">Remove</button></form>
+      {% endif %}{% endif %}
+    </div></td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% endblock %}
