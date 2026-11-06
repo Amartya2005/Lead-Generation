@@ -540,6 +540,56 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
         users = {u["username"]: u for u in db.list_users()}
         return render_template("users.html", members=g.cfg.members, users=users)
 
+    @app.post("/admin/check")
+    @admin_required
+    def admin_check():
+        """Test each external connection and report OK / the error type. Never shows secrets."""
+        import imaplib
+
+        from app.agents.sender import SenderAgent
+        from app.llm import LLM
+
+        results = []
+
+        def run(name, fn):
+            try:
+                results.append((name, True, fn()))
+            except Exception as e:
+                msg = str(e).replace("\n", " ")[:160]
+                results.append((name, False, f"{type(e).__name__}: {msg}"))
+
+        run("Database", lambda: f"{db.backend} OK, {db.scalar('SELECT count(*) FROM leads')} leads")
+        seen = set()
+        for m in g.cfg.active_members:
+            mb = g.cfg.mailbox(m)
+            if mb["id"] in seen:
+                continue
+            seen.add(mb["id"])
+            run(f"Gmail sending ({mb['smtp_user'] or 'not set'})", lambda m=m: SenderAgent(g.cfg, db).test_connection(m["id"]))
+
+            def imap_check(mb=mb):
+                if not (mb["imap_user"] and mb["imap_password"]):
+                    raise RuntimeError("IMAP_USER / IMAP_PASSWORD not set")
+                with imaplib.IMAP4_SSL(mb["imap_host"], timeout=20) as M:
+                    M.login(mb["imap_user"], mb["imap_password"])
+                    M.select("INBOX", readonly=True)
+                return "IMAP login OK (read-only)"
+            run(f"Gmail inbox ({mb['imap_user'] or 'not set'})", imap_check)
+
+        def llm_check():
+            llm = LLM(g.cfg)
+            if not llm.enabled:
+                raise RuntimeError("LLM disabled (no key or provider 'none'); emails will use the template")
+            out = llm.json("You are a connectivity test.", 'Return {"ok": true}')
+            if not out:
+                raise RuntimeError("no valid reply (see function logs)")
+            return f"{llm.provider} / {llm.model} OK"
+        run("Gemini (LLM)", llm_check)
+        db.log(actor(), "connection_check", None, {n: ok for n, ok, _ in results})
+        for name, ok, detail in results:
+            flash(f"{'✓' if ok else '✗'} {name}: {detail}", "ok" if ok else "error")
+        return redirect(url_for("team"))
+
     @app.errorhandler(400)
     @app.errorhandler(403)
     @app.errorhandler(404)

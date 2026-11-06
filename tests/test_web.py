@@ -296,3 +296,27 @@ def test_first_admin_setup_with_code(cfg, db, caplog):
     assert r.status_code == 302 and db.get_user("amartya")["is_admin"]
     assert client.get("/").status_code == 200          # signed in
     assert client.get("/setup").status_code == 404     # gone once a login exists
+
+
+def test_admin_connection_check(client, cfg, db, monkeypatch):
+    import imaplib
+    import smtplib
+
+    class OK:
+        def __init__(self, *a, **k): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def ehlo(self): ...
+        def has_extn(self, n): return False
+        def login(self, *a): ...
+        def select(self, *a, **k): ...
+        def quit(self): ...
+
+    monkeypatch.setattr(smtplib, "SMTP", OK)
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", OK)
+    _login(client)
+    r = client.post("/admin/check", data={"csrf": _csrf(client, "/team")}, follow_redirects=True)
+    page = r.get_data(as_text=True)
+    assert "✓ Database" in page and "✓ Gmail sending" in page and "✓ Gmail inbox" in page
+    assert "app-pass" not in page                     # never echo secrets
+    assert "✗ Gemini" in page                         # LLM disabled in tests -> reported, not crashed
