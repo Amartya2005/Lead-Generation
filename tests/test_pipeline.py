@@ -424,3 +424,31 @@ def test_validator_catches_soft_experience_claims(cfg):
         assert any("unsupported experience" in p for p in validate("Hi", body, **kw)), claim
     ok = "Hi team,\n\nWe build websites. One recent project is collectiqservices.com.\n\nWould a 15-minute call work?\n\nRegards,\nA"
     assert validate("Hi", ok, **kw) == []
+
+
+def test_directory_generic_and_govt_names_rejected(cfg, db):
+    from app.agents.research import ResearchAgent
+    from app.tools.geo import Geo
+
+    r = ResearchAgent(cfg, db, fetcher=None, search=None, geo=Geo(cfg))  # type: ignore[arg-type]
+    for title in ("Diagnostic Centres in Rourkela - Justdial", "Government Diagnostic Centres - Justdial",
+                  "Clinics Rourkela - Justdial", "Govt. Hospital Cuttack - Justdial"):
+        assert r._directory_name(title) is None, title
+    assert r._directory_name("Emjay Clinic & Diagnostics in Uditnagar, Rourkela - Justdial") == "Emjay Clinic & Diagnostics"
+
+
+def test_directory_listing_without_website_not_saved(cfg, db):
+    from app.agents.research import ResearchAgent
+    from app.tools.geo import Geo
+
+    class FakeSearch:
+        def search(self, q, n):
+            if "official website" in q:
+                return [{"title": "Emjay Clinic - Practo", "url": "https://www.practo.com/x", "snippet": "", "engine": "d"}]
+            return [{"title": "Emjay Clinic & Diagnostics in Uditnagar, Rourkela - Justdial",
+                     "url": "https://www.justdial.com/Rourkela/emjay", "snippet": "", "engine": "d"}]
+
+    cfg.settings["skip_domains"].append("practo.com")
+    r = ResearchAgent(cfg, db, fetcher=None, search=FakeSearch(), geo=Geo(cfg))  # type: ignore[arg-type]
+    assert r.run_search(10, ["site:justdial.com clinic Rourkela"]) == 0
+    assert db.all_leads() == []

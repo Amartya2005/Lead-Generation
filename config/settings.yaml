@@ -31,6 +31,7 @@ research:
   seconds_between_queries: [6, 12]   # random delay range between search calls
   sources: [duckduckgo]              # add google_cse if you have a free CSE key
   resolve_directory_listings: true   # turn IndiaMART/Justdial result titles into company websites
+  keep_listings_without_website: false  # true = also save listings with no site (status no_website, phone follow-up)
   # Public directory listing pages you are allowed to crawl (robots.txt is still checked).
   # Outbound links on these pages become candidate companies.
   directory_pages: []

@@ -29,6 +29,19 @@ log = logging.getLogger("research")
 
 DIRECTORY_HOSTS = ("justdial.com", "indiamart.com", "tradeindia.com", "sulekha.com")
 LISTING_TITLE = re.compile(r"^(top|best|\d+\s)|near me|list of|directory", re.I)
+GOVT_NAME = re.compile(r"^(govt\.?|government|district|state|municipal|public)\b", re.I)
+# Words that, on their own, describe a category rather than name a business.
+GENERIC_WORDS = {
+    "the", "and", "of", "in", "at", "for", "best", "top", "near", "me", "my", "all", "new", "india", "indian",
+    "centre", "centres", "center", "centers", "clinic", "clinics", "diagnostic", "diagnostics", "hospital",
+    "hospitals", "lab", "labs", "laboratory", "pathology", "services", "service", "solutions", "shop", "shops",
+    "store", "stores", "dealers", "dealer", "suppliers", "supplier", "manufacturers", "manufacturer",
+    "distributors", "distributor", "traders", "agency", "agencies", "institute", "institutes", "coaching",
+    "classes", "tuition", "school", "schools", "academy", "hotel", "hotels", "restaurant", "restaurants",
+    "travel", "travels", "tours", "builders", "developers", "real", "estate", "interior", "interiors",
+    "designers", "furniture", "jewellers", "showroom", "showrooms", "consultants", "ca", "firm", "firms",
+    "logistics", "transport", "packers", "movers", "event", "events", "management", "company", "companies",
+}
 TITLE_NOISE = re.compile(r"\s*[|\-–—:]\s*(home|official( website)?|welcome).*$", re.I)
 
 
@@ -42,6 +55,7 @@ class ResearchAgent:
         self.n_queries = int(r.get("queries_per_run", 8))
         self.per_query = int(r.get("results_per_query", 10))
         self.resolve_dirs = bool(r.get("resolve_directory_listings", True))
+        self.keep_unresolved = bool(r.get("keep_listings_without_website", False))
         self.skip_domains = cfg.settings.get("skip_domains", []) + [p["domain"] for p in cfg.portfolio]
         self.skip_tlds = cfg.settings.get("skip_tlds", [])
 
@@ -75,7 +89,13 @@ class ResearchAgent:
         if LISTING_TITLE.search(title or ""):
             return None
         t = re.split(r"\s+(?:in|at)\s+[A-Z]|\s+[-|–]\s+|,\s", title)[0].strip()
-        return t if 2 < len(t) < 80 else None
+        if not 2 < len(t) < 80 or GOVT_NAME.search(t):
+            return None
+        words = [w for w in re.findall(r"[a-z]+", t.lower()) if w not in {"pvt", "ltd", "private", "limited"}]
+        cities = {c.lower() for group in self.cfg.icp["cities"].values() for c in group}
+        if not words or all(w in GENERIC_WORDS or w in cities for w in words):
+            return None  # "Diagnostic Centres", "Clinics Rourkela": a category, not a business
+        return t
 
     def _add(self, company: str, url: str | None, source: str, source_url: str, query: str, snippet: str) -> bool:
         city_hint = self.geo.city_from_query(query) or self.geo.city_from_query(snippet)
@@ -135,6 +155,8 @@ class ResearchAgent:
                             site = self._resolve_website(name, self.geo.city_from_query(q))
                         except SearchRateLimited:
                             break
+                    if not site and not self.keep_unresolved:
+                        continue  # no website of its own -> no email to find; don't spend the lead budget
                     added += self._add(name, site, f"directory:{registered_domain(r['url'])}", r["url"], q, r["snippet"])
                 else:
                     added += self._add(self._company_from_title(r["title"]), r["url"], r["engine"], r["url"], q, r["snippet"])
