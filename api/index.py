@@ -9,22 +9,29 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-try:
-    from app.web import create_app  # noqa: E402
 
-    app = create_app()
-except Exception as exc:  # show a setup page instead of a bare 500 while configuration is incomplete
-    logging.exception("startup failed")
-    from flask import Flask
+def _build():
+    try:
+        from app.web import create_app
 
-    app = Flask(__name__)
-    reason = ("The database isn't configured yet: add DATABASE_URL in Vercel → Settings → Environment Variables, "
-              "then redeploy." if "DATABASE_URL" in str(exc) else
-              "The app couldn't start. Check the function logs in Vercel for the error.")
+        return create_app()
+    except Exception as exc:  # show a setup page instead of a bare 500 while configuration is incomplete
+        logging.exception("startup failed")
+        from flask import Flask
 
-    @app.route("/", defaults={"path": ""})
-    @app.route("/<path:path>")
-    def not_ready(path):
-        return (f"<!doctype html><meta name=viewport content='width=device-width'><title>Setup needed</title>"
-                f"<body style='font:16px system-ui;max-width:560px;margin:10vh auto;padding:0 16px'>"
-                f"<h1>Almost there</h1><p>{reason}</p></body>", 503)
+        fallback = Flask(__name__)
+        reason = ("The database isn't configured yet: add DATABASE_URL in Vercel → Settings → Environment "
+                  "Variables, then redeploy." if "DATABASE_URL" in str(exc) else
+                  "The app couldn't start. Check the function logs in Vercel for the error.")
+
+        @fallback.route("/", defaults={"path": ""})
+        @fallback.route("/<path:path>")
+        def not_ready(path):
+            return (f"<!doctype html><meta name=viewport content='width=device-width'><title>Setup needed</title>"
+                    f"<body style='font:16px system-ui;max-width:560px;margin:10vh auto;padding:0 16px'>"
+                    f"<h1>Almost there</h1><p>{reason}</p></body>", 503)
+
+        return fallback
+
+
+app = _build()
