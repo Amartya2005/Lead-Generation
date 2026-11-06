@@ -25,4 +25,5 @@ jobs:
           code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 320 \
             ${CRON_SECRET:+-H "Authorization: Bearer $CRON_SECRET"} "$TICK_URL")
           echo "HTTP $code"
-          [ "$code" = "200" ]
+          # 503 = site not configured yet (no database); don't fail the run for that.
+          [ "$code" = "200" ] || [ "$code" = "503" ]
