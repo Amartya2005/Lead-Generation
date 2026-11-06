@@ -576,6 +576,15 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
                 return "IMAP login OK (read-only)"
             run(f"Gmail inbox ({mb['imap_user'] or 'not set'})", imap_check)
 
+        if not all(ok for name, ok, _ in results if name.startswith("Gmail")):
+            from app.tools.diagnose import mail_report
+
+            report = mail_report(g.cfg)
+            db.kv_set("diag_result", __import__("json").dumps({"at": now(), "report": report}))
+            for k, steps in report.items():
+                results.append((f"diagnostic {k}", "LOGIN OK" in " ".join(steps) or "greeting" in steps[0],
+                                " → ".join(steps)))
+
         def llm_check():
             llm = LLM(g.cfg)
             if not llm.enabled:

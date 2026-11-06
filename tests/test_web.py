@@ -362,3 +362,31 @@ def test_connection_check_records_error_text(client, cfg, db, monkeypatch):
     client.post("/admin/check", data={"csrf": _csrf(client, "/team")})
     detail = db.last_event("web:amartya", "connection_check")["detail"]
     assert "SMTPAuthenticationError" in detail and "not accepted" in detail and "app-pass" not in detail
+
+
+def test_mail_diagnostics_report_shape(cfg, monkeypatch):
+    import smtplib
+    import socket
+
+    from app.tools import diagnose
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("192.0.2.1", 587))])
+
+    class Sock:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def settimeout(self, t): ...
+        def recv(self, n): return b""          # server closes without a greeting
+
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: Sock())
+
+    class Drop:
+        def __init__(self, *a, **k): ...
+        def connect(self, *a): raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+
+    monkeypatch.setattr(smtplib, "SMTP", Drop)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", Drop)
+    report = diagnose.mail_report(cfg)
+    text = str(report)
+    assert "closed with no greeting" in text and "SMTPServerDisconnected" in text
+    assert "app-pass" not in text and "password set (8 chars)" in text

@@ -66,6 +66,15 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
     from app.graph import Agents
 
     out: dict = {}
+    if db.kv_get("diag_requested") == "1":  # set by an admin/operator to debug mail connectivity
+        import json
+
+        from app.tools.diagnose import mail_report
+
+        db.kv_set("diag_requested", "0")
+        db.kv_set("diag_result", json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                              "report": mail_report(cfg)}))
+        out["diagnostics"] = "stored in kv.diag_result"
     sender = SenderAgent(cfg, db)
     out["recovered"] = sender.recover_stuck()
 
