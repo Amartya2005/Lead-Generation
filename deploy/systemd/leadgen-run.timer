@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily lead research + drafting (08:40 IST, Mon-Sat)
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 08:40:00 Asia/Kolkata
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

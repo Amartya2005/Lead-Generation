@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly send run inside the IST send window
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 10..17:05:00 Asia/Kolkata
+Persistent=false
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

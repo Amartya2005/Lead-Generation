@@ -9,6 +9,8 @@ rich>=13.0
 ddgs>=9.0            # DuckDuckGo search (free, no key)
 tldextract>=5.0
 playwright>=1.45     # JS-rendering fallback; run `playwright install chromium` once
+flask>=3.0           # web review page
+gunicorn>=22.0; platform_system != "Windows"   # production server for the review page
 
 # Optional: Google Sheets export (free with a Google service account)
 # gspread>=6.0

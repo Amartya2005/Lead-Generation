@@ -7,6 +7,8 @@
   python main.py sync-inbox          # mark replies/bounces and suppress them
   python main.py report              # Company | Website | Location | Score | Project | Draft | Status
   python main.py team                # company identity + members and their mailboxes
+  python main.py web                 # review page on http://127.0.0.1:8000 (dev)
+  python main.py web-user add amartya --admin    # create a review-page login
 
 Add `--as <member>` (see config/team.yaml) to run/draft/send as a specific team member.
 """
@@ -234,6 +236,57 @@ def cmd_test_llm(args) -> None:
     console.print(llm.json("You are a test.", 'Return {"ok": true}'))
 
 
+def cmd_web(args) -> None:
+    from app.web import create_app
+
+    cfg, db = _ctx(args)
+    console.print(f"Review page (dev mode): http://{args.host}:{args.port}  · Ctrl+C to stop")
+    create_app(dev=True, db=db).run(host=args.host, port=args.port, debug=False)
+
+
+def cmd_web_user(args) -> None:
+    import getpass
+
+    from werkzeug.security import generate_password_hash
+
+    cfg, db = _ctx(args)
+    if args.action == "list":
+        t = Table("username", "name", "role", "last login")
+        for u in db.list_users():
+            m = cfg.member(u["username"])
+            t.add_row(u["username"], m["name"] if m and m["id"] == u["username"] else "[red]not in team.yaml[/]",
+                      "admin" if u["is_admin"] else "member", u["last_login_at"] or "never")
+        console.print(t)
+        return
+    if not args.username:
+        sys.exit("username required (a member id from config/team.yaml)")
+    username = args.username.lower()
+    if args.action == "remove":
+        console.print("Removed." if db.delete_user(username) else "No such user.")
+        return
+    member = cfg.member(username)
+    if not member or member["id"] != username:
+        sys.exit(f"'{username}' is not a member id in config/team.yaml. Add them there first.")
+    existing = db.get_user(username)
+    if args.action == "passwd" and not existing:
+        sys.exit("No such user; use `web-user add`.")
+    pw = args.password or getpass.getpass(f"New password for {member['name']}: ")
+    if not args.password and pw != getpass.getpass("Repeat password: "):
+        sys.exit("Passwords don't match.")
+    if len(pw) < 10:
+        sys.exit("Use at least 10 characters.")
+    is_admin = args.admin if args.action == "add" else bool(existing["is_admin"])
+    db.upsert_user(username, generate_password_hash(pw), is_admin)
+    console.print(f"{'Updated' if existing else 'Created'} web login '{username}' ({'admin' if is_admin else 'member'}).")
+
+
+def cmd_backup(args) -> None:
+    cfg, db = _ctx(args)
+    st = cfg.settings["storage"]
+    dest = db.backup(cfg.path(st.get("backup_dir", "data/backups")), int(st.get("backup_keep_days", 14)))
+    console.print(f"Backup written: {dest}")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Free multi-agent lead generation + outreach for Indian SMEs")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -301,6 +354,20 @@ def main(argv: list[str] | None = None) -> int:
     ts.set_defaults(func=cmd_test_smtp)
 
     sub.add_parser("team", help="show company identity, members and mailboxes").set_defaults(func=cmd_team)
+
+    w = sub.add_parser("web", help="run the review page locally (dev mode, http)")
+    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--port", type=int, default=8000)
+    w.set_defaults(func=cmd_web)
+
+    wu = sub.add_parser("web-user", help="manage review-page logins (username = team member id)")
+    wu.add_argument("action", choices=["add", "passwd", "remove", "list"])
+    wu.add_argument("username", nargs="?")
+    wu.add_argument("--admin", action="store_true", help="can act on everyone's leads")
+    wu.add_argument("--password", help=argparse.SUPPRESS)  # for scripts/tests; prefer the prompt
+    wu.set_defaults(func=cmd_web_user)
+
+    sub.add_parser("backup", help="copy the database to storage.backup_dir").set_defaults(func=cmd_backup)
 
     asg = sub.add_parser("assign", help="hand leads to another team member")
     asg.add_argument("member")

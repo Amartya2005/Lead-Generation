@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Team{% endblock %}
+{% block content %}
+<h1>Team</h1>
+<div class="card scroll">
+  <p class="small muted">{{ company.legal_name }} · {{ company.website }} · assignment: {{ team.get('assignment', 'default') }}</p>
+  <table>
+    <tr><th>Member</th><th>Recipients see</th><th>Mailbox</th><th>Web login</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.m.name }}<div class="small muted">{{ r.m.id }}{% if r.m.title %} · {{ r.m.title }}{% endif %}{% if not r.m.active %} · inactive{% endif %}</div></td>
+      <td>{{ r['from'] }}</td>
+      <td>{{ r.mailbox }} {% if r.creds %}<span class="chip good">set</span>{% else %}<span class="chip bad">no password</span>{% endif %}</td>
+      <td>{% if r.user %}{{ 'admin' if r.user.is_admin else 'member' }}<div class="small muted">last login {{ r.user.last_login_at|ago }}</div>{% else %}<span class="muted">none</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="card scroll">
+  <h2>Portfolio</h2>
+  <table>
+    <tr><th>Project</th><th>How emails describe it</th><th>Status</th></tr>
+    {% for p in portfolio %}
+    <tr><td>{{ p.domain }}<div class="small muted">{{ p.kind }}{% if p.owner %} · only {{ member_name(p.owner) }}{% endif %}</div></td>
+      <td>{{ p.description }}</td>
+      <td>{% if p.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="small muted">Edit team and portfolio in <code>/opt/leadgen/config/team.yaml</code> and <code>portfolio.yaml</code> on the server. Changes apply without a restart.</p>
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+[Unit]
+Description=Lead review page (gunicorn, behind Caddy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@PREFIX@/app
+Environment=LEADGEN_ENV_FILE=@PREFIX@/.env
+Environment=LEADGEN_LOCAL_CONFIG_DIR=@PREFIX@/config
+Environment=PYTHONUNBUFFERED=1
+Environment=COLUMNS=160
+# Hardening: read-only system, writes only to the data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=@PREFIX@/data -@PREFIX@/.cache
+ExecStart=@PREFIX@/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8000 --timeout 180 --access-logfile - "app.web:create_app()"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

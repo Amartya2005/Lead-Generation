@@ -1,0 +1,10 @@
+[Unit]
+Description=Inbox sync every 2 hours
+
+[Timer]
+OnCalendar=*-*-* 08..22/2:30:00 Asia/Kolkata
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

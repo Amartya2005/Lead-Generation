@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Do-not-email list{% endblock %}
+{% block content %}
+<h1>Do-not-email list</h1>
+<form class="card inline" method="post">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="text" name="value" placeholder="email@company.in or company.in" aria-label="Email or domain" required>
+  <select name="reason" aria-label="Reason">
+    <option value="unsubscribed">asked not to be emailed</option>
+    <option value="manual">other</option>
+  </select>
+  <button class="primary" type="submit">Add</button>
+</form>
+<p class="small muted">Addresses are added here automatically when we email them, when they reply, or when an email bounces.</p>
+<div class="card scroll"><table>
+  <tr><th>Email / domain</th><th>Reason</th><th>Added</th></tr>
+  {% for r in rows %}<tr><td>{{ r.value }}</td><td>{{ r.reason }}</td><td>{{ r.created_at|ago }}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">Empty.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

@@ -76,6 +76,21 @@ CREATE TABLE IF NOT EXISTS queries (
     results  INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    username       TEXT PRIMARY KEY,   -- team.yaml member id
+    password_hash  TEXT NOT NULL,
+    is_admin       INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL,
+    last_login_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS login_failures (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    username  TEXT NOT NULL,
+    ip        TEXT,
+    ts        TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS http_cache (
     url          TEXT PRIMARY KEY,
     fetched_at   TEXT NOT NULL,
@@ -229,6 +244,57 @@ class DB:
 
     def suppression_list(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM suppression ORDER BY created_at DESC").fetchall()
+
+    # ----------------------------------------------------------------- users
+    def get_user(self, username: str):
+        return self.conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+
+    def list_users(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM users ORDER BY username").fetchall()
+
+    def upsert_user(self, username: str, password_hash: str, is_admin: bool) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO users(username, password_hash, is_admin, created_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, is_admin=excluded.is_admin",
+                (username, password_hash, int(is_admin), now()))
+
+    def delete_user(self, username: str) -> bool:
+        with self._lock:
+            return self.conn.execute("DELETE FROM users WHERE username=?", (username,)).rowcount > 0
+
+    def record_login(self, username: str, ok: bool, ip: str | None) -> None:
+        with self._lock:
+            if ok:
+                self.conn.execute("UPDATE users SET last_login_at=? WHERE username=?", (now(), username))
+                self.conn.execute("DELETE FROM login_failures WHERE username=?", (username,))
+            else:
+                self.conn.execute("INSERT INTO login_failures(username, ip, ts) VALUES (?,?,?)", (username, ip, now()))
+
+    def recent_login_failures(self, username: str, minutes: int) -> int:
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        return self.conn.execute("SELECT count(*) FROM login_failures WHERE username=? AND ts>=?",
+                                 (username, since)).fetchone()[0]
+
+    # ---------------------------------------------------------------- backup
+    def backup(self, target_dir: str | Path, keep_days: int = 14) -> Path:
+        """Consistent online copy of the database (safe while the web app and timers run)."""
+        target_dir = Path(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dest = target_dir / f"leads-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+        out = sqlite3.connect(str(dest))
+        with out:
+            self.conn.backup(out)
+        out.close()
+        cutoff = datetime.now().timestamp() - keep_days * 86400
+        for old in target_dir.glob("leads-*.db"):
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+        return dest
+
+    def last_event(self, agent: str, event: str | None = None):
+        q = "SELECT * FROM events WHERE agent=?" + (" AND event=?" if event else "") + " ORDER BY id DESC LIMIT 1"
+        return self.conn.execute(q, (agent, event) if event else (agent,)).fetchone()
 
     # ---------------------------------------------------------------- events
     def log(self, agent: str, event: str, lead_id: int | None = None, detail: Any = None) -> None:

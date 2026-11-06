@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<h1>Hi {{ user.member.name }}</h1>
+
+{% if warnings %}<div class="card"><ul class="warn">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></div>{% endif %}
+
+<div class="grid" style="margin-bottom:14px">
+  <a class="stat" href="{{ url_for('leads', status='drafted', who='mine') }}"><b>{{ mine }}</b><span>your drafts to review</span></a>
+  <a class="stat" href="{{ url_for('leads', status='drafted', who='all') }}"><b>{{ counts.get('drafted', 0) }}</b><span>all drafts</span></a>
+  <a class="stat" href="{{ url_for('leads', status='approved', who='all') }}"><b>{{ counts.get('approved', 0) }}</b><span>approved, waiting to send</span></a>
+  <a class="stat" href="{{ url_for('leads', status='sent', who='all') }}"><b>{{ counts.get('sent', 0) }}</b><span>sent</span></a>
+  <a class="stat" href="{{ url_for('leads', status='replied', who='all') }}"><b>{{ counts.get('replied', 0) }}</b><span>replied</span></a>
+  <a class="stat" href="{{ url_for('leads', status='needs_contact', who='all') }}"><b>{{ counts.get('needs_contact', 0) }}</b><span>good fit, no email found</span></a>
+</div>
+
+<div class="card">
+  <h2>Sending</h2>
+  <p class="small muted">Send window: {{ window.get('start_hour', 0) }}:00–{{ window.get('end_hour', 24) }}:00 {{ window.get('timezone', '') }},
+    {% if in_window %}<span class="chip good">open now</span>{% else %}<span class="chip">closed now</span>{% endif %}
+    · approved emails go out on the hourly send run.</p>
+  <div class="scroll"><table>
+    <tr><th>Mailbox</th><th>Used by</th><th>Sent (24h)</th><th>Login</th></tr>
+    {% for id, mb in mailboxes.items() %}
+    <tr><td>{{ mb['from'] }}<div class="small muted">{{ id }}</div></td><td>{{ mb['members']|join(', ') }}</td>
+      <td>{{ mb['sent'] }} / {{ limit }}</td>
+      <td>{% if mb['creds'] %}<span class="chip good">set</span>{% else %}<span class="chip bad">missing</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+<div class="card small">
+  <h2>Activity</h2>
+  <dl class="kv">
+    <dt>Last lead found</dt><dd>{{ (last.research.ts if last.research else None)|ago }}</dd>
+    <dt>Last draft written</dt><dd>{{ (last.draft.ts if last.draft else None)|ago }}</dd>
+    <dt>Last email sent</dt><dd>{{ (last.send.ts if last.send else None)|ago }}</dd>
+  </dl>
+</div>
+{% endblock %}

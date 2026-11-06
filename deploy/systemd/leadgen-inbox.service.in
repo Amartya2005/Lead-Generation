@@ -1,0 +1,24 @@
+[Unit]
+Description=Detect replies and bounces (read-only IMAP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@PREFIX@/app
+Environment=LEADGEN_ENV_FILE=@PREFIX@/.env
+Environment=LEADGEN_LOCAL_CONFIG_DIR=@PREFIX@/config
+Environment=PYTHONUNBUFFERED=1
+Environment=COLUMNS=160
+# Hardening: read-only system, writes only to the data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=@PREFIX@/data -@PREFIX@/.cache
+ExecStart=@PREFIX@/venv/bin/python @PREFIX@/app/main.py sync-inbox
+TimeoutStartSec=30min

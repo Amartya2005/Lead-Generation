@@ -1,18 +1,30 @@
-"""Loads settings.yaml, portfolio.yaml, icp.yaml, team.yaml and .env into one Config object."""
+"""Loads settings.yaml, portfolio.yaml, icp.yaml, team.yaml and .env into one Config object.
+
+Layout on a server (all optional, see deploy/oracle/):
+  LEADGEN_ENV_FILE          path to .env                      (default: <repo>/.env)
+  LEADGEN_CONFIG_DIR        base config dir                   (default: <repo>/config)
+  LEADGEN_LOCAL_CONFIG_DIR  server-specific overrides: any YAML file here is deep-merged
+                            over the base one (dicts merge, lists replace), so `git pull`
+                            never touches your team, portfolio or limits.
+"""
 from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
-
-import re
 
 import yaml
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_DIR = Path(os.getenv("LEADGEN_CONFIG_DIR", ROOT / "config"))
+
+
+def _config_dirs() -> tuple[Path, Path | None]:
+    base = Path(os.getenv("LEADGEN_CONFIG_DIR") or ROOT / "config")
+    local = os.getenv("LEADGEN_LOCAL_CONFIG_DIR")
+    return base, (Path(local) if local else None)
 
 
 def _bool(v: str | None, default: bool) -> bool:
@@ -21,14 +33,28 @@ def _bool(v: str | None, default: bool) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def deep_merge(base: Any, override: Any) -> Any:
+    if isinstance(base, dict) and isinstance(override, dict):
+        out = dict(base)
+        for k, v in override.items():
+            out[k] = deep_merge(base.get(k), v) if k in base else v
+        return out
+    return override
+
+
 def _load_yaml(name: str) -> dict:
-    with open(CONFIG_DIR / name, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    base_dir, local_dir = _config_dirs()
+    with open(base_dir / name, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if local_dir and (local_dir / name).exists():
+        with open(local_dir / name, encoding="utf-8") as f:
+            data = deep_merge(data, yaml.safe_load(f) or {})
+    return data
 
 
 class Config:
     def __init__(self, env_file: str | os.PathLike | None = None):
-        load_dotenv(env_file or ROOT / ".env", override=False)
+        load_dotenv(env_file or os.getenv("LEADGEN_ENV_FILE") or ROOT / ".env", override=False)
         self.settings: dict[str, Any] = _load_yaml("settings.yaml")
         self.portfolio: list[dict] = _load_yaml("portfolio.yaml").get("projects", [])
         self.icp: dict[str, Any] = _load_yaml("icp.yaml")
@@ -167,7 +193,7 @@ class Config:
 def setup_logging(cfg: Config, verbose: bool = False) -> None:
     from rich.logging import RichHandler
 
-    log_file = cfg.path("logs/run.log")
+    log_file = cfg.path(cfg.settings.get("storage", {}).get("log_file", "logs/run.log"))
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,

@@ -141,6 +141,17 @@ class SenderAgent:
 
     # --------------------------------------------------------------- run
     def run(self, ignore_window: bool = False, limit: int | None = None) -> dict:
+        from app.tools.locks import AlreadyRunning, exclusive
+
+        lock = self.cfg.path(self.cfg.settings["storage"]["db_path"]).with_suffix(".send.lock")
+        try:
+            with exclusive(lock):
+                return self._run(ignore_window, limit)
+        except AlreadyRunning:
+            log.warning("Another send is already running; not starting a second one.")
+            return {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0, "skipped": "already running"}
+
+    def _run(self, ignore_window: bool, limit: int | None) -> dict:
         counts = {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0}
         if not ignore_window and not self.in_window():
             log.warning("Outside the send window %s; nothing sent. Use --ignore-window to override.", self.window)
@@ -155,9 +166,12 @@ class SenderAgent:
                  " [DRY RUN]" if self.dry_run else "")
 
         try:
-            for lead in queue:
+            for i, queued in enumerate(queue):
                 if counts["sent"] + counts["dry_run"] >= budget:
                     break
+                lead = self.db.get_lead(queued["id"])  # re-read: a reviewer may have changed it meanwhile
+                if lead["status"] not in statuses:
+                    continue
                 try:
                     member, mailbox = self.check(lead)
                     if mailbox["id"] in dead:
@@ -210,7 +224,7 @@ class SenderAgent:
                 counts["sent"] += 1
                 log.info("Sent %s -> %s (%s)", msg["From"], lead["email"], lead["company"])
 
-                if counts["sent"] < budget and lead is not queue[-1]:
+                if counts["sent"] < budget and i < len(queue) - 1:
                     delay = random.uniform(self.min_delay, self.max_delay)
                     log.info("Waiting %.0fs before next send...", delay)
                     time.sleep(delay)

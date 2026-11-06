@@ -134,6 +134,18 @@ def build_graph(cfg: Config, a: Agents):
 
 def run_pipeline(cfg: Config, db: DB, stages: list[str] | None = None, max_leads: int | None = None,
                  send: bool = False, ignore_window: bool = False, as_member: str | None = None) -> dict:
+    from app.tools.locks import AlreadyRunning, exclusive
+
+    lock = cfg.path(cfg.settings["storage"]["db_path"]).with_suffix(".run.lock")
+    try:
+        with exclusive(lock):
+            return _run_pipeline(cfg, db, stages, max_leads, send, ignore_window, as_member)
+    except AlreadyRunning:
+        log.warning("A pipeline run is already in progress; not starting another.")
+        return {"skipped": "already running"}
+
+
+def _run_pipeline(cfg: Config, db: DB, stages, max_leads, send, ignore_window, as_member) -> dict:
     a = Agents(cfg, db, as_member)
     state: PipelineState = {"stages": stages or STAGES, "max_leads": max_leads or 0, "send": send,
                             "ignore_window": ignore_window, "as_member": as_member, "results": {}}

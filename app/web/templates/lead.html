@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.company }}{% endblock %}
+{% block content %}
+<p class="small"><a href="{{ url_for('leads', status=lead.status) }}">← {{ lead.status|replace('_', ' ') }}</a></p>
+<h1>{{ lead.company }} <span class="chip">{{ lead.status|replace('_', ' ') }}</span></h1>
+
+<div class="two">
+  <div>
+    <div class="card">
+      <h2>Email draft</h2>
+      {% if lead.email_body %}
+        <dl class="kv small" style="margin-bottom:8px">
+          <dt>To</dt><dd>{{ lead.email or 'no email found' }}</dd>
+          <dt>From</dt><dd>{{ member_name(lead.sender_id) }} ({{ company.short_name }})</dd>
+          <dt>Project</dt><dd>{% if proj %}{{ proj.domain }}
+            {% if proj.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed, won't send</span>{% endif %}{% endif %}</dd>
+        </dl>
+        {% if problems %}
+          <div class="flash error"><b>Fix before approving:</b><ul class="reasons">{% for p in problems %}<li>{{ p }}</li>{% endfor %}</ul></div>
+        {% endif %}
+        {% if editable and lead.status in ('drafted', 'needs_contact', 'approved') %}
+        <form method="post" id="draft">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label for="subject">Subject</label>
+          <input id="subject" type="text" name="subject" value="{{ lead.email_subject }}" maxlength="120">
+          <label for="body">Body <span class="muted small" id="wc">{{ words }} / {{ max_words }} words (signature not counted)</span></label>
+          <textarea id="body" name="body">{{ lead.email_body }}</textarea>
+          <div class="actions">
+            {% if lead.status == 'drafted' and lead.email %}
+              <button class="primary" type="submit" formaction="{{ url_for('lead_approve', lead_id=lead.id) }}">Approve</button>
+            {% endif %}
+            <button type="submit" formaction="{{ url_for('lead_save', lead_id=lead.id) }}">Save</button>
+            <button type="submit" class="danger" formaction="{{ url_for('lead_reject', lead_id=lead.id) }}">Reject</button>
+          </div>
+        </form>
+        <div class="actions">
+          {% if lead.status == 'approved' %}
+          <form method="post" action="{{ url_for('lead_unapprove', lead_id=lead.id) }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Move back to drafts</button></form>
+          {% endif %}
+          <form method="post" action="{{ url_for('lead_redraft', lead_id=lead.id) }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Write a new draft</button></form>
+        </div>
+        {% else %}
+          <p><b>{{ lead.email_subject }}</b></p>
+          <pre style="white-space:pre-wrap;font:inherit">{{ lead.email_body }}</pre>
+          {% if not editable %}<p class="muted small">Assigned to {{ member_name(lead.sender_id) }}; only they or an admin can change it.</p>{% endif %}
+        {% endif %}
+      {% else %}
+        <p class="muted">No draft yet.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Company</h2>
+      <dl class="kv small">
+        <dt>Score</dt><dd class="score">{{ lead.score if lead.score is not none else '–' }}/10</dd>
+        <dt>Website</dt><dd>{% if lead.website %}<a href="{{ lead.website }}" target="_blank" rel="noopener noreferrer">{{ lead.website }}</a>{% else %}—{% endif %}</dd>
+        <dt>Location</dt><dd>{{ lead.location or lead.city_hint or '—' }} {% if lead.tier %}<span class="chip">{{ lead.tier }}</span>{% endif %}</dd>
+        <dt>Industry</dt><dd>{{ lead.industry or '—' }}</dd>
+        <dt>Needs</dt><dd>{{ needs|join(', ') or '—' }}</dd>
+        <dt>Phone</dt><dd>{{ lead.phone or '—' }}</dd>
+        <dt>Other emails</dt><dd>{{ lead.all_emails or '—' }}</dd>
+        <dt>LinkedIn</dt><dd>{% if lead.linkedin %}<a href="{{ lead.linkedin }}" target="_blank" rel="noopener noreferrer">profile</a>{% else %}—{% endif %}</dd>
+        <dt>Found via</dt><dd>{{ lead.source }}{% if lead.query %}: “{{ lead.query }}”{% endif %}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Why this score</h2>
+      <ul class="reasons small">{% for r in reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+      {% if signals %}
+      <p class="small muted" style="margin-top:8px">Site: footer {{ signals.copyright_year or '?' }} ·
+        {{ 'mobile-ready' if signals.has_viewport else 'not mobile-ready' }} · {{ 'HTTPS' if signals.https else 'no HTTPS' }}
+        · WhatsApp links {{ signals.whatsapp_links or 0 }} · {{ (signals.tech or [])|join(', ') or 'no CMS detected' }}</p>
+      {% endif %}
+    </div>
+    {% if editable and lead.status in ('drafted', 'approved', 'needs_contact', 'matched') %}
+    <div class="card">
+      <h2>Assigned to</h2>
+      <form method="post" action="{{ url_for('lead_assign', lead_id=lead.id) }}" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <select name="member" aria-label="Team member">
+          {% for m in members %}<option value="{{ m.id }}" {{ 'selected' if m.id == lead.sender_id }}>{{ m.name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Reassign</button>
+      </form>
+      <p class="small muted">Reassigning swaps the signature. An approved draft goes back to review.</p>
+    </div>
+    {% endif %}
+    <div class="card events">
+      <h2>History</h2>
+      {% for e in events %}<div>{{ e.ts[:16]|replace('T', ' ') }} · {{ e.agent }}: {{ e.event }}{% if e.detail %} · {{ e.detail[:160] }}{% endif %}</div>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script nonce="{{ nonce }}">
+(function () {
+  var body = document.getElementById('body'), wc = document.getElementById('wc');
+  if (!body || !wc) return;
+  var max = {{ max_words|int }};
+  function count() {
+    var text = body.value, m = text.match(/\n\s*(best regards|regards|best|thanks|thank you|cheers|warm regards|sincerely),?\s*\n/i);
+    if (m) text = text.slice(0, m.index);
+    var n = (text.match(/\b[\w'’-]+\b/g) || []).length;
+    wc.textContent = n + ' / ' + max + ' words (signature not counted)';
+    wc.style.color = n > max ? 'var(--err)' : '';
+  }
+  body.addEventListener('input', count);
+})();
+</script>
+{% endblock %}

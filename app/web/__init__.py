@@ -1,0 +1,430 @@
+"""Web review page: log in as a team member, review / edit / approve drafts from a phone.
+
+Run locally:   python main.py web            (http://127.0.0.1:8000, dev mode)
+On a server:   gunicorn -w 2 -b 127.0.0.1:8000 'app.web:create_app()'   behind Caddy (HTTPS)
+
+Security
+  * Users are team members (config/team.yaml); passwords are hashed (werkzeug scrypt),
+    created with `python main.py web-user add <member>`.
+  * Every POST needs a per-session CSRF token. Sessions are signed, HttpOnly, SameSite=Lax,
+    and Secure (HTTPS only) outside dev mode.
+  * Repeated failed logins lock that username for a while.
+  * Members can act on their own leads; admins on everyone's.
+  * Approving re-runs the same email rules the Sender Agent enforces.
+"""
+from __future__ import annotations
+
+import hmac
+import logging
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from pathlib import Path
+
+from flask import (Flask, abort, flash, g, redirect, render_template, request, session, url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from app.config import Config, _config_dirs
+from app.db import DB, loads, now
+
+log = logging.getLogger("web")
+STATUS_TABS = ["drafted", "approved", "needs_contact", "sent", "replied", "bounced", "rejected", "discarded"]
+_DUMMY_HASH = generate_password_hash(secrets.token_hex(16))  # equal-time check for unknown usernames
+
+
+# --------------------------------------------------------------- config cache
+class _ConfigCache:
+    """Reload config when any YAML file changes, so team/portfolio edits need no restart."""
+
+    def __init__(self):
+        self._sig: tuple | None = None
+        self._cfg: Config | None = None
+
+    def _signature(self) -> tuple:
+        base, local = _config_dirs()
+        files = [p for d in (base, local) if d for p in sorted(Path(d).glob("*.yaml"))]
+        return tuple((str(p), p.stat().st_mtime_ns) for p in files)
+
+    def get(self) -> Config:
+        sig = self._signature()
+        if self._cfg is None or sig != self._sig:
+            self._cfg, self._sig = Config(), sig
+        return self._cfg
+
+
+def _secret_key(cfg: Config) -> str:
+    key = os.getenv("WEB_SECRET_KEY", "").strip()
+    if key:
+        return key
+    # Persist a generated key next to the database so all workers and restarts share it.
+    path = cfg.path(cfg.settings["storage"]["db_path"]).with_name(".web_secret")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secrets.token_hex(32))
+    except FileExistsError:
+        pass
+    return path.read_text().strip()
+
+
+def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = None) -> Flask:
+    cache = _ConfigCache()
+    cfg0 = cfg or cache.get()
+    db = db or DB(cfg0.path(cfg0.settings["storage"]["db_path"]))
+    web = cfg0.settings.get("web", {})
+
+    app = Flask(__name__)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # behind Caddy
+    app.config.update(
+        SECRET_KEY=_secret_key(cfg0),
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=not dev and os.getenv("WEB_COOKIE_SECURE", "true").lower() != "false",
+        SESSION_COOKIE_NAME="leadgen_session",
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=int(web.get("session_hours", 12))),
+        MAX_CONTENT_LENGTH=256 * 1024,
+    )
+
+    def get_cfg() -> Config:
+        return cfg if cfg is not None else cache.get()
+
+    # ------------------------------------------------------------ helpers
+    @app.before_request
+    def load_user():
+        g.cfg = get_cfg()
+        g.db = db
+        g.user = None
+        g.nonce = secrets.token_urlsafe(16)
+        username = session.get("user")
+        if username:
+            row = db.get_user(username)
+            member = g.cfg.member(username) if row else None
+            if row and member and member["id"] == username:
+                g.user = {"username": username, "is_admin": bool(row["is_admin"]), "member": member}
+            else:
+                session.clear()
+        if request.method == "POST" and request.endpoint not in ("static",):
+            sent = request.form.get("csrf", "")
+            if not sent or not hmac.compare_digest(sent, session.get("csrf", "")):
+                abort(400, "Form expired. Go back, reload the page and try again.")
+
+    @app.after_request
+    def security_headers(resp):
+        resp.headers["Content-Security-Policy"] = (
+            f"default-src 'self'; script-src 'nonce-{getattr(g, 'nonce', '')}'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        if request.endpoint not in ("static", "healthz"):
+            resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.context_processor
+    def inject():
+        if "csrf" not in session:
+            session["csrf"] = secrets.token_urlsafe(32)
+        return {"user": g.get("user"), "csrf": session["csrf"], "company": g.cfg.company, "nonce": g.nonce,
+                "loads": loads, "member_name": lambda mid: (g.cfg.member(mid) or {}).get("name", mid or "—")}
+
+    def login_required(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            if not g.user:
+                return redirect(url_for("login", next=request.full_path if request.method == "GET" else None))
+            return fn(*a, **kw)
+        return wrapper
+
+    def admin_required(fn):
+        @wraps(fn)
+        @login_required
+        def wrapper(*a, **kw):
+            if not g.user["is_admin"]:
+                abort(403)
+            return fn(*a, **kw)
+        return wrapper
+
+    def can_edit(lead) -> bool:
+        return g.user["is_admin"] or lead["sender_id"] in (None, g.user["username"])
+
+    def get_lead_or_404(lead_id: int, editable: bool = False):
+        lead = db.get_lead(lead_id)
+        if not lead:
+            abort(404)
+        if editable and not can_edit(lead):
+            abort(403, "This lead is assigned to someone else. Ask them or an admin to reassign it.")
+        return lead
+
+    def actor() -> str:
+        return f"web:{g.user['username']}"
+
+    # ------------------------------------------------------------- routes
+    @app.get("/healthz")
+    def healthz():
+        db.conn.execute("SELECT 1")
+        return "ok", 200, {"Content-Type": "text/plain"}
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if request.method == "POST":
+            username = request.form.get("username", "").strip().lower()
+            password = request.form.get("password", "")
+            max_fail, minutes = int(web.get("login_max_failures", 5)), int(web.get("lockout_minutes", 15))
+            if db.recent_login_failures(username, minutes) >= max_fail:
+                flash(f"Too many failed attempts. Try again in {minutes} minutes.", "error")
+                return render_template("login.html"), 429
+            row = db.get_user(username)
+            ok = check_password_hash(row["password_hash"] if row else _DUMMY_HASH, password) and row is not None
+            if ok and not g.cfg.member(username):
+                ok = False
+            db.record_login(username, ok, request.remote_addr)
+            if not ok:
+                flash("Wrong username or password.", "error")
+                return render_template("login.html"), 401
+            session.clear()
+            session.permanent = True
+            session["user"] = username
+            session["csrf"] = secrets.token_urlsafe(32)
+            nxt = request.args.get("next") or ""
+            return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else url_for("dashboard"))
+        return render_template("login.html")
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
+
+    @app.get("/")
+    @login_required
+    def dashboard():
+        from app.agents.sender import SenderAgent
+
+        c = g.cfg
+        counts = db.status_counts()
+        mine = db.conn.execute("SELECT count(*) FROM leads WHERE status='drafted' AND sender_id=?",
+                               (g.user["username"],)).fetchone()[0]
+        sender = SenderAgent(c, db)
+        mailboxes = {}
+        for m in c.members:
+            mb = c.mailbox(m)
+            mailboxes.setdefault(mb["id"], {"from": mb["from_email"], "sent": sender.sent_last_24h(mb["id"]),
+                                            "creds": bool(mb["smtp_user"] and mb["smtp_password"]), "members": []})
+            mailboxes[mb["id"]]["members"].append(m["name"])
+        warnings = []
+        if c.settings["sending"]["dry_run"]:
+            warnings.append("DRY_RUN is on: approved emails are logged, not sent. Set DRY_RUN=false in .env when ready.")
+        unconfirmed = [p["domain"] for p in c.portfolio if not p.get("confirmed")]
+        if unconfirmed:
+            warnings.append("Portfolio not confirmed (emails citing these won't send): " + ", ".join(unconfirmed))
+        for mid, mb in mailboxes.items():
+            if not mb["creds"]:
+                warnings.append(f"No SMTP password for mailbox {mb['from']} ({mid}).")
+        last = {k: db.last_event(*v) for k, v in {"research": ("research", "discovered"),
+                                                  "draft": ("email", "drafted"), "send": ("sender", "sent")}.items()}
+        return render_template("dashboard.html", counts=counts, mine=mine, mailboxes=mailboxes, warnings=warnings,
+                               last=last, limit=sender.daily_limit, in_window=sender.in_window(),
+                               window=c.settings["sending"].get("send_window", {}))
+
+    @app.get("/leads")
+    @login_required
+    def leads():
+        status = request.args.get("status", "drafted")
+        who = request.args.get("who", "mine" if not g.user["is_admin"] else "all")
+        q = request.args.get("q", "").strip()
+        sql, args = "SELECT * FROM leads WHERE status=?", [status]
+        if who == "mine":
+            sql += " AND sender_id=?"
+            args.append(g.user["username"])
+        if q:
+            sql += " AND (company LIKE ? OR domain LIKE ? OR city LIKE ?)"
+            args += [f"%{q}%"] * 3
+        sql += " ORDER BY score DESC, id DESC LIMIT 200"
+        rows = db.conn.execute(sql, args).fetchall()
+        return render_template("leads.html", rows=rows, status=status, who=who, q=q, tabs=STATUS_TABS,
+                               counts=db.status_counts())
+
+    @app.get("/leads/<int:lead_id>")
+    @login_required
+    def lead_detail(lead_id: int):
+        lead = get_lead_or_404(lead_id)
+        proj = g.cfg.project(lead["matched_project"] or "")
+        from app.tools.email_rules import split_signature, word_count
+        words = word_count(split_signature(lead["email_body"] or "")[0])
+        return render_template("lead.html", lead=lead, proj=proj, signals=loads(lead["signals"], {}),
+                               reasons=loads(lead["reasons"], []), needs=loads(lead["needs"], []),
+                               problems=loads(lead["validation"], []), events=db.events_for(lead_id),
+                               editable=can_edit(lead), members=g.cfg.active_members, words=words,
+                               max_words=g.cfg.settings["email"].get("max_words", 120))
+
+    def _save_draft(lead) -> list[str]:
+        from app.agents.email_writer import check_draft
+
+        subject = request.form.get("subject", lead["email_subject"] or "").strip()
+        body = request.form.get("body", lead["email_body"] or "").replace("\r\n", "\n").strip()
+        problems = check_draft(g.cfg, dict(lead), subject, body)
+        if subject != lead["email_subject"] or body != lead["email_body"]:
+            db.update_lead(lead["id"], email_subject=subject, email_body=body, validation=problems)
+            db.log(actor(), "edited", lead["id"], {"problems": problems})
+        return problems
+
+    @app.post("/leads/<int:lead_id>/save")
+    @login_required
+    def lead_save(lead_id: int):
+        lead = get_lead_or_404(lead_id, editable=True)
+        if lead["status"] not in ("drafted", "needs_contact", "approved"):
+            abort(409, f"Lead is {lead['status']}; it can't be edited.")
+        problems = _save_draft(lead)
+        if lead["status"] == "approved":  # edited after approval -> needs a fresh approval
+            db.update_lead(lead_id, status="drafted")
+        flash("Saved." + (" Fix the problems below before approving." if problems else ""),
+              "warn" if problems else "ok")
+        return redirect(url_for("lead_detail", lead_id=lead_id))
+
+    @app.post("/leads/<int:lead_id>/approve")
+    @login_required
+    def lead_approve(lead_id: int):
+        lead = get_lead_or_404(lead_id, editable=True)
+        if lead["status"] != "drafted":
+            abort(409, f"Only drafts can be approved (this one is {lead['status']}).")
+        if not lead["email"]:
+            abort(409, "No email address for this lead.")
+        problems = _save_draft(lead)
+        if problems:
+            flash("Not approved, the draft breaks the email rules: " + "; ".join(problems), "error")
+            return redirect(url_for("lead_detail", lead_id=lead_id))
+        reason = db.is_suppressed(lead["email"], lead["domain"])
+        if reason:
+            db.update_lead(lead_id, status="suppressed")
+            flash(f"Not approved, this address is suppressed ({reason}).", "error")
+            return redirect(url_for("lead_detail", lead_id=lead_id))
+        db.update_lead(lead_id, status="approved", approved_at=now())
+        db.log(actor(), "approved", lead_id)
+        flash("Approved. It will go out in the next send run (within the send window).", "ok")
+        return redirect(_next_draft_url(lead_id))
+
+    @app.post("/leads/<int:lead_id>/reject")
+    @login_required
+    def lead_reject(lead_id: int):
+        lead = get_lead_or_404(lead_id, editable=True)
+        if lead["status"] not in ("drafted", "approved", "needs_contact"):
+            abort(409)
+        db.update_lead(lead_id, status="rejected")
+        db.log(actor(), "rejected", lead_id, request.form.get("reason", "")[:200])
+        flash("Rejected.", "ok")
+        return redirect(_next_draft_url(lead_id))
+
+    @app.post("/leads/<int:lead_id>/unapprove")
+    @login_required
+    def lead_unapprove(lead_id: int):
+        lead = get_lead_or_404(lead_id, editable=True)
+        if lead["status"] != "approved":
+            abort(409)
+        db.update_lead(lead_id, status="drafted")
+        db.log(actor(), "unapproved", lead_id)
+        flash("Moved back to drafts.", "ok")
+        return redirect(url_for("lead_detail", lead_id=lead_id))
+
+    @app.post("/leads/<int:lead_id>/assign")
+    @login_required
+    def lead_assign(lead_id: int):
+        from app.graph import Agents
+        from app.agents.email_writer import apply_signature, check_draft
+
+        lead = get_lead_or_404(lead_id, editable=True)
+        member = g.cfg.member(request.form.get("member", ""))
+        if not member or member["id"] != request.form.get("member") or not member.get("active", True):
+            abort(400, "Unknown or inactive team member.")
+        if lead["status"] not in ("drafted", "approved", "needs_contact", "matched"):
+            abort(409)
+        proj = g.cfg.project(lead["matched_project"] or "")
+        if proj and not g.cfg.project_allowed_for(proj, member["id"]):
+            a = Agents(g.cfg, db)
+            db.update_lead(lead_id, status="qualified")
+            a.matching().match_one(db.get_lead(lead_id), member_id=member["id"])
+            if db.get_lead(lead_id)["status"] == "matched":
+                a.email().draft_one(db.get_lead(lead_id))
+            a.close()
+        else:
+            body = apply_signature(g.cfg, lead["email_body"] or "", member) if lead["email_body"] else None
+            fields = {"sender_id": member["id"], "status": "drafted" if lead["status"] == "approved" else lead["status"]}
+            if body:
+                fields.update(email_body=body, validation=check_draft(g.cfg, {**dict(lead), "sender_id": member["id"]},
+                                                                      lead["email_subject"], body))
+            db.update_lead(lead_id, **fields)
+        db.log(actor(), "assigned", lead_id, member["id"])
+        flash(f"Assigned to {member['name']}.", "ok")
+        return redirect(url_for("lead_detail", lead_id=lead_id))
+
+    @app.post("/leads/<int:lead_id>/redraft")
+    @login_required
+    def lead_redraft(lead_id: int):
+        from app.graph import Agents
+
+        lead = get_lead_or_404(lead_id, editable=True)
+        if lead["status"] not in ("drafted", "needs_contact", "approved") or not lead["matched_project"]:
+            abort(409)
+        a = Agents(g.cfg, db)
+        a.email().draft_one(lead)
+        a.close()
+        db.log(actor(), "redrafted", lead_id)
+        flash("New draft written.", "ok")
+        return redirect(url_for("lead_detail", lead_id=lead_id))
+
+    def _next_draft_url(after_id: int) -> str:
+        row = db.conn.execute(
+            "SELECT id FROM leads WHERE status='drafted' AND id<>? AND (sender_id=? OR ?) ORDER BY score DESC, id LIMIT 1",
+            (after_id, g.user["username"], int(g.user["is_admin"]))).fetchone()
+        return url_for("lead_detail", lead_id=row["id"]) if row else url_for("leads", status="drafted")
+
+    @app.route("/suppression", methods=["GET", "POST"])
+    @login_required
+    def suppression():
+        if request.method == "POST":
+            value = request.form.get("value", "").strip().lower()
+            if not value or " " in value or "." not in value:
+                flash("Enter an email address or a domain.", "error")
+            else:
+                db.suppress(value, "email" if "@" in value else "domain", request.form.get("reason") or "manual")
+                db.log(actor(), "suppressed", None, value)
+                flash(f"{value} will never be emailed.", "ok")
+            return redirect(url_for("suppression"))
+        return render_template("suppression.html", rows=db.suppression_list()[:500])
+
+    @app.get("/team")
+    @login_required
+    def team():
+        c = g.cfg
+        users = {u["username"]: u for u in db.list_users()}
+        rows = []
+        for m in c.members:
+            mb = c.mailbox(m)
+            rows.append({"m": m, "from": f"{c.from_name(m)} <{mb['from_email']}>", "mailbox": mb["id"],
+                         "creds": bool(mb["smtp_user"] and mb["smtp_password"]), "user": users.get(m["id"])})
+        return render_template("team.html", rows=rows, portfolio=c.portfolio, team=c.team)
+
+    @app.errorhandler(400)
+    @app.errorhandler(403)
+    @app.errorhandler(404)
+    @app.errorhandler(409)
+    def error(e):
+        return render_template("error.html", error=e), e.code
+
+    @app.template_filter("ago")
+    def ago(ts: str | None) -> str:
+        if not ts:
+            return "never"
+        try:
+            delta = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
+        except ValueError:
+            return ts
+        mins = int(delta.total_seconds() // 60)
+        if mins < 60:
+            return f"{mins} min ago"
+        if mins < 48 * 60:
+            return f"{mins // 60} h ago"
+        return f"{mins // 1440} days ago"
+
+    return app

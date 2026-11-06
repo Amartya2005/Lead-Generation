@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ status|replace('_', ' ')|capitalize }}{% endblock %}
+{% block content %}
+<h1>Leads</h1>
+<div class="tabs">
+  {% for t in tabs %}
+    <a href="{{ url_for('leads', status=t, who=who) }}" class="{{ 'on' if t == status }}">{{ t|replace('_', ' ') }} ({{ counts.get(t, 0) }})</a>
+  {% endfor %}
+</div>
+<form class="inline card" method="get">
+  <input type="hidden" name="status" value="{{ status }}">
+  <select name="who" aria-label="Whose leads">
+    <option value="mine" {{ 'selected' if who == 'mine' }}>Assigned to me</option>
+    <option value="all" {{ 'selected' if who == 'all' }}>Everyone's</option>
+  </select>
+  <input type="text" name="q" value="{{ q }}" placeholder="Search company, domain, city" aria-label="Search">
+  <button type="submit">Filter</button>
+</form>
+
+<div class="card list">
+  {% for r in rows %}
+  <div class="row">
+    <div>
+      <a href="{{ url_for('lead_detail', lead_id=r.id) }}"><b>{{ r.company }}</b></a>
+      {% if loads(r.validation, []) %}<span class="chip bad">needs fixes</span>{% endif %}
+      <div class="meta">{{ r.location or r.city_hint or '—' }} · {{ r.domain or 'no website' }}
+        · {{ r.matched_project or 'no project' }} · {{ member_name(r.sender_id) }}</div>
+      {% if r.email_subject %}<div class="meta">“{{ r.email_subject }}”</div>{% endif %}
+    </div>
+    <div class="score">{{ r.score if r.score is not none else '–' }}<span class="muted small">/10</span></div>
+  </div>
+  {% else %}
+  <p class="muted">Nothing here.</p>
+  {% endfor %}
+</div>
+{% endblock %}

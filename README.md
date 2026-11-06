@@ -22,8 +22,8 @@ research ─▶ enrich ─▶ qualify ─▶ match ─▶ write ──▶ [human
 ## Folder structure
 
 ```
-lead-outreach-agent/
-├── main.py                    # CLI: run / review / send / report / sync-inbox / ...
+Lead-Generation/
+├── main.py                    # CLI: run / review / send / web / report / sync-inbox / ...
 ├── requirements.txt
 ├── .env.example               # copy to .env
 ├── config/
@@ -48,7 +48,14 @@ lead-outreach-agent/
 │       ├── email_rules.py     # hard rules every email must pass
 │       ├── imap_sync.py       # replies/bounces → suppression list (read-only)
 │       ├── report.py          # CSV / Google Sheets output
+│       ├── locks.py           # stops two senders running at once
 │       └── domains.py
+│   └── web/                   # review page (Flask): templates/, static/
+├── deploy/
+│   ├── oracle/setup.sh        # one-command server install (idempotent)
+│   ├── oracle/update.sh       # backup, pull, test, restart
+│   ├── oracle/ORACLE.md       # step-by-step Oracle Cloud guide
+│   └── systemd/               # web service + run/send/inbox/backup timers
 ├── data/leads.db              # created on first run
 ├── output/leads.csv           # per-lead report
 ├── logs/run.log
@@ -225,8 +232,45 @@ Individual stages: `research`, `enrich`, `qualify`, `match`, `draft`, or
 `python main.py run --stages enrich,qualify`.
 
 When you're happy with the drafts, set `DRY_RUN=false`. A daily routine is `run`, then `review`,
-`send`, and `sync-inbox`. On Linux/macOS you can schedule `run` and `sync-inbox` with cron. Keep
-`review` manual.
+`send`, and `sync-inbox`. On the server these run on timers, and review happens on the web page.
+
+## Review page
+
+A mobile-friendly page where each team member signs in, reads their drafts with the score and the
+reasons behind it, edits the email, and approves or rejects it. Approving re-runs the same email rules
+the sender enforces. Members act on their own leads; admins can act on everyone's and reassign them.
+There's also a do-not-email list and a team/portfolio status page.
+
+Try it locally:
+
+```bash
+python main.py web-user add amartya --admin
+```
+
+```bash
+python main.py web
+```
+Then open http://127.0.0.1:8000.
+
+Security: hashed passwords, a CSRF token on every form, Secure/HttpOnly/SameSite session cookies,
+lockout after 5 failed logins, a strict Content-Security-Policy, and an audit trail in each lead's
+history (`web:<user> approved`).
+
+## Deploy (Oracle Cloud Always Free)
+
+See **[deploy/oracle/ORACLE.md](deploy/oracle/ORACLE.md)**. In short, on a fresh Ubuntu 24.04 VM:
+
+```bash
+git clone https://github.com/Amartya2005/Lead-Generation.git
+```
+
+```bash
+sudo bash Lead-Generation/deploy/oracle/setup.sh --domain leads.focustriggerautomation.com
+```
+
+Then fill `/opt/leadgen/.env`, edit `/opt/leadgen/config/team.yaml` and `portfolio.yaml`, and create
+logins with `leadgen web-user add <member>`. Server-specific config in `/opt/leadgen/config/` is
+deep-merged over the repo's `config/`, so `git pull` never overwrites it.
 
 ## Safety controls
 

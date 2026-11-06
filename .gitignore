@@ -7,3 +7,6 @@ data/*.db-*
 logs/*.log
 output/*.csv
 service_account.json
+data/.web_secret
+data/*.lock
+data/backups/

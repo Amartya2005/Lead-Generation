@@ -44,6 +44,12 @@ email:
   max_words: 120
   use_llm: true               # false = deterministic template only
 
+web:
+  # Review page (python main.py web, or gunicorn on the server). Secrets: WEB_SECRET_KEY in .env.
+  login_max_failures: 5        # per username, then locked for lockout_minutes
+  lockout_minutes: 15
+  session_hours: 12
+
 sending:
   daily_limit: 25             # (env: DAILY_SEND_LIMIT)
   min_delay_seconds: 90       # random delay between sends
@@ -60,6 +66,9 @@ sending:
 storage:
   db_path: data/leads.db
   csv_report: output/leads.csv
+  log_file: logs/run.log
+  backup_dir: data/backups
+  backup_keep_days: 14
   google_sheets:
     enabled: false
     spreadsheet: "Lead Outreach"
