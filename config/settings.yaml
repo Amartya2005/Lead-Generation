@@ -134,4 +134,14 @@ skip_domains:
   - shiksha.com
   - collegedunia.com
   - startupindia.gov.in
+  - weddingwire.in
+  - wedmegood.com
+  - shaadisaga.com
+  - weddingz.in
+  - idbf.in
+  - goldjewellers.in
+  - grotal.com
+  - hotfrog.in
+  - cybo.com
+  - lbb.in
 skip_tlds: [gov.in, nic.in, gov, edu]

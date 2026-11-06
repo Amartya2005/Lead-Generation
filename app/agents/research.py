@@ -28,7 +28,9 @@ from app.tools.search import SearchClient, SearchRateLimited
 log = logging.getLogger("research")
 
 DIRECTORY_HOSTS = ("justdial.com", "indiamart.com", "tradeindia.com", "sulekha.com")
-LISTING_TITLE = re.compile(r"^(top|best|\d+\s)|near me|list of|directory", re.I)
+LISTING_TITLE = re.compile(
+    r"^(top|best|find|search|explore|browse|\d+\s)\b|near me|list of|directory|\b\d+\+? best\b|"
+    r"\bbest \w+(?: \w+)? in\b|\b(listings?|marketplace|compare)\b", re.I)
 GOVT_NAME = re.compile(r"^(govt\.?|government|district|state|municipal|public)\b", re.I)
 # Words that, on their own, describe a category rather than name a business.
 GENERIC_WORDS = {
@@ -159,6 +161,8 @@ class ResearchAgent:
                         continue  # no website of its own -> no email to find; don't spend the lead budget
                     added += self._add(name, site, f"directory:{registered_domain(r['url'])}", r["url"], q, r["snippet"])
                 else:
+                    if LISTING_TITLE.search(r["title"] or ""):
+                        continue  # "Best jewellers in X", "Find your next shop...": a list page, not a business
                     added += self._add(self._company_from_title(r["title"]), r["url"], r["engine"], r["url"], q, r["snippet"])
         return added
 

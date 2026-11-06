@@ -452,3 +452,21 @@ def test_directory_listing_without_website_not_saved(cfg, db):
     r = ResearchAgent(cfg, db, fetcher=None, search=FakeSearch(), geo=Geo(cfg))  # type: ignore[arg-type]
     assert r.run_search(10, ["site:justdial.com clinic Rourkela"]) == 0
     assert db.all_leads() == []
+
+
+def test_search_listing_pages_and_aggregators_skipped(cfg, db):
+    from app.agents.research import ResearchAgent
+    from app.tools.geo import Geo
+
+    class FakeSearch:
+        def search(self, q, n):
+            return [
+                {"title": "Raj Rani Jewellers | Home", "url": "https://rajranijewellers.com/", "snippet": "", "engine": "d"},
+                {"title": "Best Jewellers in Bhilwara", "url": "https://idbf-like.example.in/x", "snippet": "", "engine": "d"},
+                {"title": "Find Your Next Jewellery Shop in Bhilwara", "url": "https://shops.example.in/", "snippet": "", "engine": "d"},
+                {"title": "PC Jeweller, Bhilwara", "url": "https://www.weddingwire.in/pc-jeweller", "snippet": "", "engine": "d"},
+            ]
+
+    r = ResearchAgent(cfg, db, fetcher=None, search=FakeSearch(), geo=Geo(cfg))  # type: ignore[arg-type]
+    assert r.run_search(10, ["jewellers Bhilwara"]) == 1
+    assert [l["domain"] for l in db.all_leads()] == ["rajranijewellers.com"]
