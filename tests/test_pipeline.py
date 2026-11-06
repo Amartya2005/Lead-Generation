@@ -32,12 +32,16 @@ def cfg(tmp_path, monkeypatch):
     s["sending"].update(min_delay_seconds=0, max_delay_seconds=0, send_window={})
     s["storage"]["db_path"] = str(tmp_path / "leads.db")
     (cdir / "settings.yaml").write_text(yaml.safe_dump(s))
+    team = yaml.safe_load((cdir / "team.yaml").read_text())
+    team["members"].append({"id": "priya", "name": "Priya Das", "title": "Business Development",
+                            "email": "priya@focustriggerautomation.com", "phone": "", "active": True})
+    (cdir / "team.yaml").write_text(yaml.safe_dump(team))
 
     monkeypatch.setenv("LEADGEN_CONFIG_DIR", str(cdir))
+    for k in [k for k in __import__("os").environ if k.startswith(("SMTP_", "IMAP_", "DEFAULT_SENDER"))]:
+        monkeypatch.delenv(k)
     for k, v in {"LLM_PROVIDER": "none", "HUMAN_APPROVAL": "true", "DRY_RUN": "false", "DAILY_SEND_LIMIT": "25",
-                 "SENDER_NAME": "Amartya", "SENDER_COMPANY": "FocusTrigger Automation",
-                 "SENDER_EMAIL": "me@focustriggerautomation.com",
-                 "SENDER_WEBSITE": "https://focustriggerautomation.com"}.items():
+                 "SMTP_USER": "focustriggerautomation@gmail.com", "SMTP_PASSWORD": "app-pass"}.items():
         monkeypatch.setenv(k, v)
     import importlib
 
@@ -183,9 +187,11 @@ def test_full_pipeline(cfg, db, sites, monkeypatch, tmp_path):
     assert word_count(body) <= 120
     assert "collectiqservices.com" in lead["email_body"]
 
+    assert lead["sender_id"] == "amartya"
+    assert "Amartya\nFocusTrigger Automation Pvt Ltd\nfocustriggerautomation.com" in lead["email_body"]
+    assert "At FocusTrigger Automation, we build" in lead["email_body"]
+
     # Approval mode: nothing is sent before review.
-    monkeypatch.setenv("SMTP_USER", "me@focustriggerautomation.com")
-    monkeypatch.setenv("SMTP_PASSWORD", "x")
     monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
     FakeSMTP.sent = []
     assert SenderAgent(cfg, db).run()["sent"] == 0
@@ -200,6 +206,7 @@ def test_full_pipeline(cfg, db, sites, monkeypatch, tmp_path):
     assert out["sent"] == 1 and len(FakeSMTP.sent) == 1
     msg = FakeSMTP.sent[0]
     assert msg["To"] == "info@saishiksha.in" and msg["List-Unsubscribe"]
+    assert msg["From"] == "Amartya | FocusTrigger Automation <focustriggerautomation@gmail.com>"
     assert db.get_lead(lead["id"])["status"] == "sent"
     assert db.is_suppressed("info@saishiksha.in", None) == "emailed"
 
@@ -212,16 +219,21 @@ def test_full_pipeline(cfg, db, sites, monkeypatch, tmp_path):
 def test_daily_limit_and_unconfirmed_portfolio(cfg, db, monkeypatch):
     from app.agents.sender import SenderAgent
 
+    from app.db import now
+
     monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
-    monkeypatch.setenv("SMTP_USER", "u")
-    monkeypatch.setenv("SMTP_PASSWORD", "p")
-    for i in range(3):
-        db.log("sender", "sent", None, f"earlier {i}")
+    FakeSMTP.sent = []
+    for i in range(3):  # 3 emails already sent from the shared mailbox today
+        db.add_lead(company=f"Old {i}", domain=f"old{i}.in", status="sent", sent_from="shared", sent_at=now())
+    _approved_lead(cfg, db, "fresh.in")
     s = SenderAgent(cfg, db)
     s.daily_limit = 3
-    assert s.run() == {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0}
+    out = s.run()
+    assert out["sent"] == 0 and out["blocked"] == 1
+    assert "daily limit" in db.events_for(db.find_lead(domain="fresh.in")["id"])[-1]["detail"]
 
     cfg.project("collectiq")["confirmed"] = False
+    s.daily_limit = 25
     lead_id = db.add_lead(company="X", website="https://x.in/", domain="x.in", email="a@x.in",
                           matched_project="collectiq", email_subject="s", email_body="b", status="approved")
     from app.agents.sender import SendBlocked
@@ -292,3 +304,145 @@ def test_research_skips_platforms_and_dedupes(cfg, db):
     assert r.run_search(10) == 1
     lead = db.find_lead(domain="saiclinic.in")
     assert lead["company"] == "Sai Clinic" and lead["website"] == "https://www.saiclinic.in/"
+
+
+# ------------------------------------------------------------------ team
+BODY = ("Hi Fresh team,\n\nI came across Fresh while looking at distributors in Cuttack.\n\n"
+        "One recent project of ours is collectiqservices.com.\n\nWould a 15-minute call next week be useful?")
+
+
+def _approved_lead(cfg, db, domain, sender="amartya", project="collectiq"):
+    from app.agents.email_writer import apply_signature
+
+    body = apply_signature(cfg, BODY, cfg.member(sender))
+    if project == "amartya":
+        body = body.replace("collectiqservices.com", "amartya.focustriggerautomation.com")
+    return db.add_lead(company="Fresh", website=f"https://{domain}/", domain=domain, email=f"info@{domain}",
+                       matched_project=project, sender_id=sender, email_subject="Order tracking at Fresh",
+                       email_body=body, status="approved")
+
+
+def test_personal_portfolio_only_for_owner(cfg):
+    from app.agents.email_writer import check_draft
+    from app.agents.matching import best_project
+
+    for needs in (["website"], ["custom_app"], ["website", "automation", "custom_app"]):
+        proj, _ = best_project(cfg, needs, None, "priya")
+        assert proj and proj["id"] != "amartya"
+    lead = {"matched_project": "amartya", "sender_id": "priya", "signals": None, "company": "X"}
+    assert "personal portfolio" in check_draft(cfg, lead, "s", "b")[0]
+
+
+def test_round_robin_assignment(cfg, db):
+    from app.agents.matching import MatchingAgent
+
+    cfg.team["assignment"] = "round_robin"
+    for i in range(4):
+        db.add_lead(company=f"Co {i}", domain=f"co{i}.in", needs='["crm"]', status="qualified")
+    MatchingAgent(cfg, db).run()
+    assert db.assigned_counts() == {"amartya": 2, "priya": 2}
+
+
+def test_as_member_override_and_signature(cfg, db):
+    from app.agents.email_writer import EmailAgent
+    from app.agents.matching import MatchingAgent
+
+    lead_id = db.add_lead(company="Acme Traders", domain="acme.in", email="info@acme.in", needs='["erp"]',
+                          status="qualified")
+    MatchingAgent(cfg, db, sender_override="priya").run()
+    EmailAgent(cfg, db, llm=type("L", (), {"enabled": False})()).run()
+    lead = db.get_lead(lead_id)
+    assert lead["sender_id"] == "priya" and lead["validation"] == "[]"
+    assert "Priya Das\nBusiness Development | FocusTrigger Automation Pvt Ltd" in lead["email_body"]
+    with pytest.raises(ValueError):
+        MatchingAgent(cfg, db, sender_override="nobody")
+
+
+def test_member_own_mailbox_and_per_mailbox_limit(cfg, db, monkeypatch):
+    from app.agents.sender import SenderAgent
+    from app.db import now
+
+    monkeypatch.setenv("SMTP_PASSWORD_PRIYA", "priya-app-pass")
+    mb = cfg.mailbox(cfg.member("priya"))
+    assert mb["id"] == "member:priya" and mb["from_email"] == "priya@focustriggerautomation.com"
+    assert cfg.mailbox(cfg.member("amartya"))["id"] == "shared"
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    FakeSMTP.sent = []
+    for i in range(2):  # shared mailbox is at its limit...
+        db.add_lead(company=f"Old {i}", domain=f"old{i}.in", status="sent", sent_from="shared", sent_at=now())
+    _approved_lead(cfg, db, "a.in", "amartya")
+    _approved_lead(cfg, db, "p.in", "priya")
+    s = SenderAgent(cfg, db)
+    s.daily_limit = 2
+    out = s.run()
+    # ...so only Priya's email goes out, from her own mailbox.
+    assert out["sent"] == 1 and out["blocked"] == 1
+    assert FakeSMTP.sent[0]["From"] == "Priya Das | FocusTrigger Automation <priya@focustriggerautomation.com>"
+    assert db.find_lead(domain="p.in")["sent_from"] == "member:priya"
+
+
+def test_assign_resigns_and_requires_reapproval(cfg, db, monkeypatch):
+    import main
+
+    lead_id = _approved_lead(cfg, db, "z.in", "amartya")
+    monkeypatch.setattr(main, "_ctx", lambda args: (cfg, db))
+    main.main(["assign", "priya", str(lead_id)])
+    lead = db.get_lead(lead_id)
+    assert lead["sender_id"] == "priya" and lead["status"] == "drafted"
+    assert "Priya Das" in lead["email_body"] and "\nAmartya\n" not in lead["email_body"]
+
+
+def test_assign_rematches_personal_portfolio(cfg, db, monkeypatch):
+    import main
+
+    lead_id = _approved_lead(cfg, db, "y.in", "amartya", project="amartya")
+    db.update_lead(lead_id, needs='["website"]', status="drafted")
+    monkeypatch.setattr(main, "_ctx", lambda args: (cfg, db))
+    main.main(["assign", "priya", str(lead_id)])
+    lead = db.get_lead(lead_id)
+    assert lead["sender_id"] == "priya" and lead["matched_project"] != "amartya" and lead["status"] == "drafted"
+
+
+def test_llm_falls_back_to_next_model_on_503(cfg, monkeypatch):
+    import requests
+    from app.llm import LLM
+
+    cfg.settings["llm"].update(provider="gemini", requests_per_minute=10000)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    calls = []
+
+    class Resp:
+        def __init__(self, code, payload):
+            self.status_code, self._p, self.text = code, payload, str(payload)
+        def json(self):
+            return self._p
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(response=self)
+
+    def fake_post(url, **kw):
+        calls.append(url.split("/models/")[1].split(":")[0])
+        if len(calls) == 1:
+            return Resp(503, {"error": "busy"})
+        return Resp(200, {"candidates": [{"content": {"parts": [{"text": '{"ok": true}'}]}}]})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    llm = LLM(cfg)
+    assert llm.json("s", "p") == {"ok": True}
+    assert calls[0] == "gemini-3.8-flash" and calls[1] == "gemini-flash-latest"
+
+
+def test_db_migrates_old_schema(tmp_path):
+    import sqlite3
+    from app.db import DB
+
+    path = tmp_path / "old.db"
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY, company TEXT NOT NULL, domain TEXT UNIQUE, "
+              "status TEXT NOT NULL DEFAULT 'discovered', score INTEGER, sent_at TEXT, created_at TEXT, updated_at TEXT)")
+    c.commit()
+    c.close()
+    db = DB(path)
+    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(leads)")}
+    assert {"sender_id", "sent_from"} <= cols

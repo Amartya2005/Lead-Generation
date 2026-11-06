@@ -28,6 +28,7 @@ lead-outreach-agent/
 ├── .env.example               # copy to .env
 ├── config/
 │   ├── settings.yaml          # LLM, crawl, limits, send window, storage
+│   ├── team.yaml              # company identity + team members who sign/send
 │   ├── portfolio.yaml         # the ONLY work emails may reference
 │   └── icp.yaml               # cities and tiers, industries, query templates
 ├── app/
@@ -77,15 +78,65 @@ playwright install chromium
 cp .env.example .env
 ```
 
-Then edit `.env`:
+Then edit `.env` (secrets only; it's git-ignored):
 
-1. **Sender:** your name, company and website.
-2. **Gmail SMTP:** turn on 2-Step Verification, create an **App Password** (Google Account → Security →
-   App passwords) and put it in `SMTP_PASSWORD` and `IMAP_PASSWORD`. Your normal password won't work.
-3. **LLM:** get a free key at <https://aistudio.google.com/apikey> (Gemini) or <https://console.groq.com>
-   (Groq). Or run Ollama locally, or set `LLM_PROVIDER=none`. Every agent works without an LLM,
-   using rules and templates.
-4. Leave `DRY_RUN=true` for your first runs.
+1. **Gmail App Password:** Google won't accept the normal account password over SMTP/IMAP. On
+   focustriggerautomation@gmail.com, turn on 2-Step Verification (myaccount.google.com → Security),
+   then create an app password at <https://myaccount.google.com/apppasswords>. Put the 16-character code
+   in both `SMTP_PASSWORD` and `IMAP_PASSWORD`.
+2. **LLM:** put a free key from <https://aistudio.google.com/apikey> in `GEMINI_API_KEY` (or use
+   Groq / Ollama, or set `LLM_PROVIDER=none`). If a Gemini model is busy or retired, the next model in
+   `llm.default_models` is used automatically. Every agent still works without an LLM, using rules
+   and templates.
+3. Leave `DRY_RUN=true` for your first runs.
+
+### Company and team
+
+`config/team.yaml` holds the company identity and the people who sign emails:
+
+```yaml
+company:
+  legal_name: "FocusTrigger Automation Pvt Ltd"   # signature
+  short_name: "FocusTrigger Automation"           # "At FocusTrigger Automation, we build..."
+  website: "https://focustriggerautomation.com"
+  email: "focustriggerautomation@gmail.com"
+from_name_format: "{name} | {company}"            # inbox shows: Amartya | FocusTrigger Automation
+assignment: default                               # or round_robin across active members
+default_member: amartya
+members:
+  - {id: amartya, name: "Amartya", title: "", email: "", phone: "", active: true}
+  - {id: priya, name: "Priya Das", title: "Business Development", email: "", phone: "", active: true}
+```
+
+- Each lead is assigned one member when it's matched. That member's name and title go in the
+  signature and the From name.
+- By default everyone sends from the **shared company mailbox**, and the daily limit (25) is shared too.
+  To give a member their own mailbox, with its own 25/day, fill their `email` and add
+  `SMTP_PASSWORD_<ID>` (e.g. `SMTP_PASSWORD_PRIYA`) to `.env`.
+- Replies go to the mailbox the email was sent from, so `sync-inbox` sees them.
+- A personal portfolio (`owner:` in `portfolio.yaml`, e.g. amartya.focustriggerautomation.com) is only
+  cited in its owner's emails. Other members get client work instead.
+
+```bash
+python main.py team
+```
+Shows each member, the From line recipients will see, the mailbox, whether credentials are set, and sends in the last 24h.
+
+```bash
+python main.py run --as priya
+```
+New drafts from this run are signed by Priya.
+
+```bash
+python main.py assign priya 12 15
+```
+Hands leads #12 and #15 to Priya. The signature is replaced (an approved draft goes back to review), or
+the lead is re-matched if its project was someone else's personal portfolio.
+
+```bash
+python main.py send --as priya
+```
+Sends only Priya's approved leads.
 
 ### Confirm your portfolio first
 
@@ -103,6 +154,7 @@ python main.py test-llm
 ```bash
 python main.py test-smtp
 ```
+Add `--as <member>` to test a member's own mailbox.
 
 ```bash
 python -m pytest -q
@@ -181,13 +233,15 @@ When you're happy with the drafts, set `DRY_RUN=false`. A daily routine is `run`
 | Control | Where | Default |
 |---|---|---|
 | Human approval: only `approved` drafts are sent | `HUMAN_APPROVAL` / `sending.human_approval` | **ON** |
-| Daily limit (rolling 24h, counted from the send log) | `DAILY_SEND_LIMIT` | **25** |
+| Daily limit per mailbox (rolling 24h, counted from actual sends) | `DAILY_SEND_LIMIT` | **25** |
 | Random delay between sends | `sending.min/max_delay_seconds` | 90–300 s |
 | Send window | `sending.send_window` | Mon–Sat 10:00–18:00 IST |
 | Suppression list: emailed / bounced / replied / manual, by email and domain | `suppression` table | always on |
 | One email per company domain | `sending.max_per_domain` | 1 |
 | Re-validation right before sending (catches bad manual edits) | `sender.check()` | always on |
 | Unconfirmed portfolio project blocks sending | `portfolio.yaml` → `confirmed` | always on |
+| Personal portfolio only cited by its owner | `portfolio.yaml` → `owner` | always on |
+| Inactive or unknown team member blocks sending | `team.yaml` → `active` | always on |
 | Opt-out line + `List-Unsubscribe` header | signature | always on |
 | Dry run | `DRY_RUN` | true in `.env.example` |
 
@@ -249,6 +303,8 @@ Every step is written to the `events` table (`python main.py show <id>`).
 
 - Free tiers change. If a model name stops working, change `llm.default_models` in `settings.yaml`
   or set `LLM_MODEL`.
+- Never commit `.env` or `data/leads.db`. The repository is public, and the database holds every lead's
+  email address and status.
 - Outlook / Microsoft 365 is retiring password-based SMTP, so it may not accept an app password.
   Gmail is the reliable free option.
 - Cold email in India: only email business addresses published on the company's own site, keep the

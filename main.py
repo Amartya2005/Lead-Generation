@@ -6,6 +6,9 @@
   python main.py send                # send approved drafts (limits, delays, suppression)
   python main.py sync-inbox          # mark replies/bounces and suppress them
   python main.py report              # Company | Website | Location | Score | Project | Draft | Status
+  python main.py team                # company identity + members and their mailboxes
+
+Add `--as <member>` (see config/team.yaml) to run/draft/send as a specific team member.
 """
 from __future__ import annotations
 
@@ -51,7 +54,7 @@ def cmd_run(args) -> None:
     _warn_unconfirmed(cfg)
     stages = args.stages.split(",") if args.stages else None
     results = run_pipeline(cfg, db, stages=stages, max_leads=args.max_leads, send=args.send,
-                           ignore_window=args.ignore_window)
+                           ignore_window=args.ignore_window, as_member=args.as_member)
     _print_results(results)
     from app.tools.report import push_google_sheets, write_csv
 
@@ -67,7 +70,8 @@ def cmd_stage(stage: str):
 
         cfg, db = _ctx(args)
         _print_results(run_pipeline(cfg, db, stages=[stage], max_leads=getattr(args, "max_leads", None),
-                                    send=(stage == "send"), ignore_window=getattr(args, "ignore_window", False)))
+                                    send=(stage == "send"), ignore_window=getattr(args, "ignore_window", False),
+                                    as_member=getattr(args, "as_member", None)))
     return run
 
 
@@ -99,7 +103,9 @@ def cmd_send(args) -> None:
 
     cfg, db = _ctx(args)
     _warn_unconfirmed(cfg)
-    s = SenderAgent(cfg, db)
+    if args.as_member and not cfg.member(args.as_member):
+        sys.exit(f"unknown team member '{args.as_member}'")
+    s = SenderAgent(cfg, db, only_member=args.as_member)
     if args.dry_run:
         s.dry_run = True
     console.print(s.run(ignore_window=args.ignore_window, limit=args.limit))
@@ -160,7 +166,63 @@ def cmd_test_smtp(args) -> None:
     from app.agents.sender import SenderAgent
 
     cfg, db = _ctx(args)
-    console.print(SenderAgent(cfg, db).test_connection())
+    console.print(SenderAgent(cfg, db).test_connection(args.as_member))
+
+
+def cmd_team(args) -> None:
+    cfg, db = _ctx(args)
+    c = cfg.company
+    console.print(f"[bold]{c['legal_name']}[/] ({c['short_name']}) · {c['website']} · {c['email']}")
+    console.print(f"assignment: {cfg.team.get('assignment', 'default')} · default member: {cfg.team['default_member']}")
+    open_leads = db.assigned_counts()
+    t = Table("id", "name", "title", "From (as recipients see it)", "mailbox", "credentials", "open leads", "sent 24h")
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+    for m in cfg.members:
+        mb = cfg.mailbox(m)
+        creds = "[green]set[/]" if mb["smtp_user"] and mb["smtp_password"] else "[red]missing[/]"
+        t.add_row(m["id"] + ("" if m.get("active", True) else " (inactive)"), m["name"], m["title"],
+                  f"{cfg.from_name(m)} <{mb['from_email']}>", mb["id"], creds,
+                  str(open_leads.get(m["id"], 0)), str(db.sent_since(since, mb["id"])))
+    console.print(t)
+
+
+def cmd_assign(args) -> None:
+    """Hand leads to another team member: re-signs the draft, or re-matches if the
+    current project is someone else's personal portfolio."""
+    from app.agents.email_writer import apply_signature, check_draft
+    from app.graph import Agents
+
+    cfg, db = _ctx(args)
+    member = cfg.member(args.member)
+    if not member or args.member != member["id"]:
+        sys.exit(f"unknown team member '{args.member}'")
+    a = Agents(cfg, db)
+    for lead_id in args.ids:
+        lead = db.get_lead(lead_id)
+        if not lead:
+            console.print(f"#{lead_id}: not found")
+            continue
+        if lead["status"] in ("sent", "replied", "bounced"):
+            console.print(f"#{lead_id}: already {lead['status']}; not reassigned")
+            continue
+        proj = cfg.project(lead["matched_project"] or "")
+        if proj and not cfg.project_allowed_for(proj, member["id"]):
+            db.update_lead(lead_id, status="qualified")
+            a.matching().match_one(db.get_lead(lead_id), member_id=member["id"])
+            if db.get_lead(lead_id)["status"] == "matched":
+                a.email().draft_one(db.get_lead(lead_id))
+            console.print(f"#{lead_id}: re-matched and re-drafted for {member['name']}")
+        elif lead["email_body"]:
+            body = apply_signature(cfg, lead["email_body"], member)
+            problems = check_draft(cfg, {**dict(lead), "sender_id": member["id"]}, lead["email_subject"], body)
+            status = "drafted" if lead["status"] == "approved" else lead["status"]  # re-review after a change
+            db.update_lead(lead_id, sender_id=member["id"], email_body=body, validation=problems, status=status)
+            console.print(f"#{lead_id}: now signed by {member['name']}" + (" (needs re-approval)" if status != lead["status"] else ""))
+        else:
+            db.update_lead(lead_id, sender_id=member["id"])
+            console.print(f"#{lead_id}: assigned to {member['name']}")
+        db.log("assign", "assigned", lead_id, member["id"])
 
 
 def cmd_test_llm(args) -> None:
@@ -182,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--stages", help="comma list: research,enrich,qualify,match,write,send")
     r.add_argument("--send", action="store_true", help="also run the Sender Agent at the end")
     r.add_argument("--ignore-window", action="store_true")
+    r.add_argument("--as", dest="as_member", metavar="MEMBER", help="team member (config/team.yaml) who signs new drafts")
     r.set_defaults(func=cmd_run)
 
     for name, stage, help_ in [("research", "research", "Research Agent only"), ("enrich", "enrich", "Enrichment Agent"),
@@ -189,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
                                ("draft", "write", "Email Agent")]:
         s = sub.add_parser(name, help=help_)
         s.add_argument("--max-leads", type=int, default=None)
+        if stage in ("match", "write"):
+            s.add_argument("--as", dest="as_member", metavar="MEMBER", help="team member who signs these drafts")
         s.set_defaults(func=cmd_stage(stage))
 
     a = sub.add_parser("add-lead", help="seed a company website manually")
@@ -206,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     sd.add_argument("--dry-run", action="store_true")
     sd.add_argument("--ignore-window", action="store_true", help="send outside business hours")
     sd.add_argument("--limit", type=int, default=None, help="send at most N now (still capped by daily limit)")
+    sd.add_argument("--as", dest="as_member", metavar="MEMBER", help="only send leads assigned to this member")
     sd.set_defaults(func=cmd_send)
 
     si = sub.add_parser("sync-inbox", help="read replies/bounces via IMAP and suppress them")
@@ -230,7 +296,16 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("id", type=int)
     sh.set_defaults(func=cmd_show)
 
-    sub.add_parser("test-smtp", help="check SMTP login").set_defaults(func=cmd_test_smtp)
+    ts = sub.add_parser("test-smtp", help="check SMTP login (shared mailbox, or a member's with --as)")
+    ts.add_argument("--as", dest="as_member", metavar="MEMBER")
+    ts.set_defaults(func=cmd_test_smtp)
+
+    sub.add_parser("team", help="show company identity, members and mailboxes").set_defaults(func=cmd_team)
+
+    asg = sub.add_parser("assign", help="hand leads to another team member")
+    asg.add_argument("member")
+    asg.add_argument("ids", nargs="+", type=int)
+    asg.set_defaults(func=cmd_assign)
     sub.add_parser("test-llm", help="check LLM key").set_defaults(func=cmd_test_llm)
 
     args = p.parse_args(argv)

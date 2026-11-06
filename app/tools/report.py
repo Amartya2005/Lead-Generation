@@ -10,7 +10,7 @@ from app.db import DB
 
 log = logging.getLogger("report")
 COLUMNS = ["Company", "Website", "Location", "Score", "Matched Project", "Email Draft", "Status",
-           "Email", "Needs", "Reasons", "Updated"]
+           "Sender", "Email", "Needs", "Reasons", "Updated"]
 
 
 def rows(cfg: Config, db: DB, status: str | None = None) -> list[list]:
@@ -22,7 +22,7 @@ def rows(cfg: Config, db: DB, status: str | None = None) -> list[list]:
         draft = f"Subject: {r['email_subject']}\n\n{r['email_body']}" if r["email_body"] else ""
         out.append([
             r["company"], r["website"] or "", r["location"] or r["city_hint"] or "", r["score"] if r["score"] is not None else "",
-            proj["domain"] if proj else "", draft, r["status"], r["email"] or "",
+            proj["domain"] if proj else "", draft, r["status"], r["sender_id"] or "", r["email"] or "",
             ", ".join(loads(r["needs"], [])), "; ".join(loads(r["reasons"], [])), r["updated_at"],
         ])
     return out

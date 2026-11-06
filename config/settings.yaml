@@ -4,11 +4,11 @@
 llm:
   provider: gemini            # gemini | groq | xai | ollama | none   (env: LLM_PROVIDER)
   model: ""                   # blank = provider default below          (env: LLM_MODEL)
-  default_models:
-    gemini: gemini-2.5-flash
-    groq: llama-3.3-70b-versatile
-    xai: grok-3-mini
-    ollama: llama3.1
+  default_models:            # first one is tried first; the rest are fallbacks on 404/503
+    gemini: [gemini-3.8-flash, gemini-flash-latest, gemini-3.1-flash-lite]
+    groq: [llama-3.3-70b-versatile]
+    xai: [grok-3-mini]
+    ollama: [llama3.1]
   requests_per_minute: 8      # stay under free-tier RPM
   max_calls_per_run: 150      # hard cap per pipeline run
   temperature: 0.4
@@ -16,7 +16,7 @@ llm:
 
 crawl:
   # Identify yourself honestly. Put your own site in the URL.
-  user_agent: "LeadResearchBot/1.0 (+https://focustriggerautomation.com)"
+  user_agent: "FocusTriggerLeadBot/1.0 (+https://focustriggerautomation.com)"
   per_host_delay_seconds: 6   # minimum gap between requests to one host (robots Crawl-delay wins if larger)
   timeout_seconds: 20
   max_pages_per_site: 3       # homepage + up to 2 contact/about/careers pages

@@ -1,7 +1,8 @@
 """Email Agent: writes a short, personalised, non-salesy cold email.
 
 Inputs are ONLY: company name, city, industry, one observed problem (from site
-signals), the matched portfolio project's domain + description, and sender details.
+signals), the matched portfolio project's domain + description, and the company /
+team-member identity from config/team.yaml (the signature names the assigned member).
 The LLM never sees raw website text here, which limits prompt injection from scraped pages.
 
 Every draft (LLM or template) goes through tools.email_rules.validate().
@@ -16,7 +17,7 @@ import re
 from app.config import Config
 from app.db import DB, loads
 from app.llm import LLM
-from app.tools.email_rules import validate, word_count
+from app.tools.email_rules import split_signature, validate, word_count
 
 log = logging.getLogger("email")
 
@@ -58,11 +59,30 @@ def allowed_numbers(lead: dict) -> set[str]:
             | set(re.findall(r"\d+", lead.get("company") or "")) | {"15"})
 
 
+def signature(cfg: Config, member: dict) -> str:
+    """Sign-off + opt-out line for a team member, from config/team.yaml."""
+    c = cfg.company
+    site = c["website"].replace("https://", "").replace("http://", "").rstrip("/")
+    lines = ["Regards,", member["name"]]
+    lines.append(f"{member['title']} | {c['legal_name']}" if member.get("title") else c["legal_name"])
+    lines.append(" | ".join(x for x in (site, member.get("phone") or c.get("phone")) if x))
+    lines += ["", "Not relevant? Just reply \"no\" and I won't email again."]
+    return "\n".join(lines)
+
+
+def apply_signature(cfg: Config, body: str, member: dict) -> str:
+    """Replace whatever signature a draft has with the given member's."""
+    main, _ = split_signature(body or "")
+    return main.rstrip() + "\n\n" + signature(cfg, member)
+
+
 def check_draft(cfg: Config, lead: dict, subject: str, body: str) -> list[str]:
     """Validate a (possibly human-edited) draft against the matched project and lead facts."""
     proj = cfg.project(lead.get("matched_project") or "")
     if not proj:
         return ["no matched portfolio project"]
+    if not cfg.project_allowed_for(proj, lead.get("sender_id")):
+        return [f"{proj['domain']} is {proj['owner']}'s personal portfolio; only they can cite it"]
     return validate(subject or "", body or "", allowed_domains=cfg.allowed_email_domains,
                     required_domain=proj["domain"], allowed_numbers=allowed_numbers(lead),
                     max_words=int(cfg.settings["email"].get("max_words", 120)))
@@ -83,16 +103,6 @@ class EmailAgent:
         self.use_llm = bool(cfg.settings["email"].get("use_llm", True))
 
     # ------------------------------------------------------------- pieces
-    def signature(self) -> str:
-        s = self.cfg.sender
-        lines = ["Regards,", s["name"]]
-        lines.append(" | ".join(x for x in (s["company"], s["website"].replace("https://", "").rstrip("/")) if x))
-        if s["phone"]:
-            lines.append(s["phone"])
-        lines.append("")
-        lines.append("Not relevant? Just reply \"no\" and I won't email again.")
-        return "\n".join(l for l in lines if l is not None)
-
     def facts(self, lead: dict) -> dict:
         proj = self.cfg.project(lead["matched_project"])
         needs = loads(lead["needs"], []) or ["website"]
@@ -104,7 +114,7 @@ class EmailAgent:
             "need_phrase": NEED_PHRASE.get(needs[0], NEED_PHRASE["website"]),
             "observed_problem": lead["observed_problem"] or "",
             "project": proj,
-            "sender_company": self.cfg.sender["company"] or "our studio",
+            "sender_company": self.cfg.company["short_name"],
         }
 
     def template(self, f: dict) -> tuple[str, str]:
@@ -149,7 +159,8 @@ class EmailAgent:
     # ---------------------------------------------------------------- api
     def draft(self, lead: dict) -> tuple[str, str, list[str], str]:
         f = self.facts(lead)
-        sig = self.signature()
+        member = self.cfg.member(lead.get("sender_id")) or self.cfg.member(None)
+        sig = signature(self.cfg, member)
         check = lambda subj, body: check_draft(self.cfg, lead, subj, body)  # noqa: E731
         source = "template"
         subject, body = self.template(f)
@@ -167,16 +178,22 @@ class EmailAgent:
         full = body + "\n\n" + sig
         return subject, full, check(subject, full), source
 
+    def draft_one(self, lead) -> tuple[str, list[str]]:
+        lead = dict(lead)
+        subject, body, problems, source = self.draft(lead)
+        status = "drafted" if lead["email"] else "needs_contact"
+        self.db.update_lead(lead["id"], email_subject=subject, email_body=body, validation=problems, status=status)
+        self.db.log(self.name, "drafted", lead["id"],
+                    {"source": source, "sender": lead.get("sender_id"),
+                     "words": word_count(split_signature(body)[0]), "problems": problems})
+        log.info("Drafted %-35s as %s (%s, %s)", lead["company"][:35], lead.get("sender_id"), source,
+                 "OK" if not problems else problems)
+        return status, problems
+
     def run(self, limit: int = 100) -> dict:
         counts = {"drafted": 0, "needs_contact": 0, "invalid": 0}
         for lead in self.db.leads_by_status("matched", limit=limit):
-            lead = dict(lead)
-            subject, body, problems, source = self.draft(lead)
-            status = "drafted" if lead["email"] else "needs_contact"
-            self.db.update_lead(lead["id"], email_subject=subject, email_body=body, validation=problems, status=status)
-            self.db.log(self.name, "drafted", lead["id"],
-                        {"source": source, "words": word_count(body.split("\nRegards,")[0]), "problems": problems})
+            status, problems = self.draft_one(lead)
             counts[status] += 1
             counts["invalid"] += bool(problems)
-            log.info("Drafted %-35s (%s, %s)", lead["company"][:35], source, "OK" if not problems else problems)
         return counts

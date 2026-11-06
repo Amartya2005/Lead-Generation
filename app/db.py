@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS leads (
     observed_problem TEXT,
     matched_project TEXT,
     match_reason    TEXT,
+    sender_id       TEXT,          -- team.yaml member who signs/sends this email
+    sent_from       TEXT,          -- mailbox id used ('shared' or 'member:<id>')
     email_subject   TEXT,
     email_body      TEXT,
     validation      TEXT,          -- JSON list of rule violations (empty = clean)
@@ -49,7 +51,6 @@ CREATE TABLE IF NOT EXISTS leads (
     approved_at     TEXT,
     sent_at         TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 
 CREATE TABLE IF NOT EXISTS suppression (
     value       TEXT PRIMARY KEY,  -- lower-cased email or domain
@@ -86,6 +87,15 @@ CREATE TABLE IF NOT EXISTS http_cache (
 );
 """
 
+# Indexes are created after migrations so older databases get the new columns first.
+INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+CREATE INDEX IF NOT EXISTS idx_leads_sent ON leads(sent_from, sent_at);
+"""
+
+# Columns added after the first release: ALTER TABLE on older databases.
+MIGRATIONS = {"leads": {"sender_id": "TEXT", "sent_from": "TEXT"}}
+
 # Lead status lifecycle
 STATUSES = [
     "discovered",      # Research Agent found it
@@ -119,7 +129,16 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+        self.conn.executescript(INDEXES)
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        for table, cols in MIGRATIONS.items():
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for col, typ in cols.items():
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
     # ---------------------------------------------------------------- leads
     def find_lead(self, domain: str | None = None, company: str | None = None, city: str | None = None):
@@ -175,10 +194,18 @@ class DB:
     def status_counts(self) -> dict[str, int]:
         return {r[0]: r[1] for r in self.conn.execute("SELECT status, count(*) FROM leads GROUP BY status")}
 
-    def sent_since(self, since_iso: str) -> int:
-        return self.conn.execute(
-            "SELECT count(*) FROM events WHERE agent='sender' AND event='sent' AND ts>=?", (since_iso,)
-        ).fetchone()[0]
+    def sent_since(self, since_iso: str, mailbox: str | None = None) -> int:
+        """Emails actually sent since a time, optionally from one mailbox (daily limits are per mailbox)."""
+        if mailbox:
+            return self.conn.execute("SELECT count(*) FROM leads WHERE sent_from=? AND sent_at>=?",
+                                     (mailbox, since_iso)).fetchone()[0]
+        return self.conn.execute("SELECT count(*) FROM leads WHERE sent_at>=?", (since_iso,)).fetchone()[0]
+
+    def assigned_counts(self) -> dict[str, int]:
+        """Open leads per team member (used for round-robin assignment)."""
+        return {r[0]: r[1] for r in self.conn.execute(
+            "SELECT sender_id, count(*) FROM leads WHERE sender_id IS NOT NULL "
+            "AND status IN ('matched','drafted','needs_contact','approved') GROUP BY sender_id")}
 
     # ----------------------------------------------------------- suppression
     def suppress(self, value: str, kind: str, reason: str) -> None:

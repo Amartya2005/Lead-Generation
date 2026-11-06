@@ -11,6 +11,7 @@
 #   website | automation | crm | erp | custom_app | event | community | registration
 # kind: client (work for someone else) is preferred as an example over
 #       own_company / personal sites.
+# owner: (personal sites only) the team.yaml member id allowed to cite it.
 # ---------------------------------------------------------------------------
 projects:
   - id: collectiq
@@ -38,7 +39,7 @@ projects:
     domain: focustriggerautomation.com
     url: https://focustriggerautomation.com
     kind: own_company
-    description: "our FocusTrigger Automation site, covering the business automation, website and CRM/ERP work we do"
+    description: "our company site, covering the business automation, website and CRM/ERP work we do"
     capabilities: [automation, website, crm, erp]
     industries: []
     confirmed: false
@@ -48,6 +49,7 @@ projects:
     domain: amartya.focustriggerautomation.com
     url: https://amartya.focustriggerautomation.com
     kind: personal
+    owner: amartya          # team.yaml member id: only this person's emails may cite "my portfolio"
     description: "my portfolio of business websites, automation demos and custom apps"
     capabilities: [website, automation, custom_app]
     industries: []

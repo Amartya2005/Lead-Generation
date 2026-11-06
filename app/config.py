@@ -1,10 +1,12 @@
-"""Loads settings.yaml, portfolio.yaml, icp.yaml and .env into one Config object."""
+"""Loads settings.yaml, portfolio.yaml, icp.yaml, team.yaml and .env into one Config object."""
 from __future__ import annotations
 
 import logging
 import os
 from pathlib import Path
 from typing import Any
+
+import re
 
 import yaml
 from dotenv import load_dotenv
@@ -30,8 +32,10 @@ class Config:
         self.settings: dict[str, Any] = _load_yaml("settings.yaml")
         self.portfolio: list[dict] = _load_yaml("portfolio.yaml").get("projects", [])
         self.icp: dict[str, Any] = _load_yaml("icp.yaml")
+        self.team: dict[str, Any] = _load_yaml("team.yaml")
         self._apply_env_overrides()
         self._validate_portfolio()
+        self._validate_team()
 
     # ------------------------------------------------------------------ env
     @staticmethod
@@ -48,6 +52,8 @@ class Config:
             s["sending"]["daily_limit"] = int(self.env("DAILY_SEND_LIMIT"))
         s["sending"]["human_approval"] = _bool(os.getenv("HUMAN_APPROVAL"), s["sending"].get("human_approval", True))
         s["sending"]["dry_run"] = _bool(os.getenv("DRY_RUN"), s["sending"].get("dry_run", False))
+        if self.env("DEFAULT_SENDER"):
+            self.team["default_member"] = self.env("DEFAULT_SENDER")
 
     def _validate_portfolio(self) -> None:
         if not self.portfolio:
@@ -59,6 +65,35 @@ class Config:
             p.setdefault("confirmed", False)
             p.setdefault("kind", "client")
             p.setdefault("industries", [])
+            p.setdefault("owner", None)  # personal portfolio: only its owner may cite it
+
+    def _validate_team(self) -> None:
+        c = self.team.setdefault("company", {})
+        for key in ("legal_name", "short_name", "website"):
+            if not c.get(key):
+                raise ValueError(f"config/team.yaml: company.{key} is required")
+        c.setdefault("email", "")
+        c.setdefault("phone", "")
+        members = self.team.setdefault("members", [])
+        if not members:
+            raise ValueError("config/team.yaml needs at least one member (who signs the emails)")
+        ids = set()
+        for m in members:
+            if not m.get("id") or not m.get("name"):
+                raise ValueError("every team member needs an id and a name")
+            if not re.fullmatch(r"[a-z0-9_]+", m["id"]):
+                raise ValueError(f"member id '{m['id']}' must be lowercase letters, digits or _")
+            if m["id"] in ids:
+                raise ValueError(f"duplicate member id '{m['id']}'")
+            ids.add(m["id"])
+            for k in ("title", "email", "phone"):
+                m[k] = m.get(k) or ""
+            m.setdefault("active", True)
+        if self.team.get("default_member") not in ids:
+            self.team["default_member"] = members[0]["id"]
+        for p in self.portfolio:
+            if p["owner"] and p["owner"] not in ids:
+                raise ValueError(f"portfolio project {p['id']}: owner '{p['owner']}' is not a member in team.yaml")
 
     # -------------------------------------------------------------- helpers
     def path(self, rel: str) -> Path:
@@ -68,15 +103,54 @@ class Config:
     def project(self, project_id: str) -> dict | None:
         return next((p for p in self.portfolio if p["id"] == project_id), None)
 
+    # ----------------------------------------------------------------- team
     @property
-    def sender(self) -> dict[str, str]:
+    def company(self) -> dict[str, str]:
+        return self.team["company"]
+
+    @property
+    def members(self) -> list[dict]:
+        return self.team["members"]
+
+    @property
+    def active_members(self) -> list[dict]:
+        return [m for m in self.members if m.get("active", True)]
+
+    def member(self, member_id: str | None) -> dict | None:
+        return next((m for m in self.members if m["id"] == (member_id or self.team["default_member"])), None)
+
+    def from_name(self, member: dict) -> str:
+        c = self.company
+        return self.team.get("from_name_format", "{name} | {company}").format(
+            name=member["name"], company=c["short_name"], legal_name=c["legal_name"])
+
+    def mailbox(self, member: dict) -> dict[str, Any]:
+        """SMTP/IMAP settings for a member: their own mailbox if SMTP_PASSWORD_<ID> is set,
+        otherwise the shared company mailbox (SMTP_USER / SMTP_PASSWORD)."""
+        key = member["id"].upper()
+        own_pw = self.env(f"SMTP_PASSWORD_{key}")
+        if own_pw:
+            user = self.env(f"SMTP_USER_{key}") or member["email"]
+            return {
+                "id": f"member:{member['id']}", "own": True, "from_email": member["email"] or user,
+                "smtp_host": self.env(f"SMTP_HOST_{key}") or self.env("SMTP_HOST", "smtp.gmail.com"),
+                "smtp_port": int(self.env(f"SMTP_PORT_{key}") or self.env("SMTP_PORT", "587")),
+                "smtp_user": user, "smtp_password": own_pw,
+                "imap_host": self.env(f"IMAP_HOST_{key}") or self.env("IMAP_HOST", "imap.gmail.com"),
+                "imap_user": user, "imap_password": self.env(f"IMAP_PASSWORD_{key}") or own_pw,
+            }
+        user = self.env("SMTP_USER") or self.company["email"]
         return {
-            "name": self.env("SENDER_NAME", "Your Name"),
-            "company": self.env("SENDER_COMPANY", ""),
-            "email": self.env("SENDER_EMAIL") or self.env("SMTP_USER"),
-            "website": self.env("SENDER_WEBSITE", ""),
-            "phone": self.env("SENDER_PHONE", ""),
+            "id": "shared", "own": False, "from_email": user,
+            "smtp_host": self.env("SMTP_HOST", "smtp.gmail.com"), "smtp_port": int(self.env("SMTP_PORT", "587")),
+            "smtp_user": user, "smtp_password": self.env("SMTP_PASSWORD"),
+            "imap_host": self.env("IMAP_HOST", "imap.gmail.com"), "imap_user": self.env("IMAP_USER") or user,
+            "imap_password": self.env("IMAP_PASSWORD") or self.env("SMTP_PASSWORD"),
         }
+
+    def project_allowed_for(self, project: dict, member_id: str | None) -> bool:
+        """A personal portfolio (owner set) may only be cited by its owner."""
+        return not project.get("owner") or project["owner"] == (member_id or self.team["default_member"])
 
     @property
     def allowed_email_domains(self) -> set[str]:
@@ -84,7 +158,7 @@ class Config:
         from urllib.parse import urlparse
 
         doms = {p["domain"].lower() for p in self.portfolio}
-        site = self.sender["website"]
+        site = self.company["website"]
         if site:
             doms.add((urlparse(site if "://" in site else "https://" + site).hostname or "").lower())
         return {d.removeprefix("www.") for d in doms if d}

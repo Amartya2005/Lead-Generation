@@ -21,7 +21,8 @@ def _show(cfg: Config, lead, idx: int, total: int) -> None:
     problems = loads(lead["validation"], [])
     head = (f"[bold]{lead['company']}[/]  ({idx}/{total})\n"
             f"{lead['website']}  ·  {lead['location'] or '?'}  ·  score [bold]{lead['score']}[/]/10\n"
-            f"To: {lead['email']}   Project: {proj.get('domain')} "
+            f"To: {lead['email']}   From: {cfg.from_name(cfg.member(lead['sender_id']) or cfg.member(None))}   "
+            f"Project: {proj.get('domain')} "
             f"{'[green]confirmed[/]' if proj.get('confirmed') else '[red]UNCONFIRMED (will not send)[/]'}\n"
             f"Why: {'; '.join(loads(lead['reasons'], [])[:6])}")
     console.print(Panel(head, title="Lead", border_style="cyan"))
@@ -88,9 +89,10 @@ def export_csv(cfg: Config, db: DB, path: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["id", "decision", "company", "website", "email", "score", "project", "subject", "body", "problems"])
+        w.writerow(["id", "decision", "company", "website", "email", "score", "sender", "project", "subject", "body",
+                    "problems"])
         for r in db.leads_by_status("drafted"):
-            w.writerow([r["id"], "", r["company"], r["website"], r["email"], r["score"], r["matched_project"],
+            w.writerow([r["id"], "", r["company"], r["website"], r["email"], r["score"], r["sender_id"], r["matched_project"],
                         r["email_subject"], r["email_body"], "; ".join(loads(r["validation"], []))])
     return str(target)
 

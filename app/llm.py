@@ -35,7 +35,11 @@ class LLM:
         c = cfg.settings["llm"]
         self.cfg = cfg
         self.provider = (c.get("provider") or "none").lower()
-        self.model = c.get("model") or c.get("default_models", {}).get(self.provider, "")
+        defaults = c.get("default_models", {}).get(self.provider, [])
+        defaults = [defaults] if isinstance(defaults, str) else list(defaults)
+        # LLM_MODEL / llm.model pins one model; the provider defaults stay as fallbacks.
+        self.models: list[str] = list(dict.fromkeys(([c["model"]] if c.get("model") else []) + defaults))
+        self.model = self.models[0] if self.models else ""
         self.temperature = float(c.get("temperature", 0.4))
         self.timeout = float(c.get("timeout_seconds", 60))
         self.min_gap = 60.0 / max(1, int(c.get("requests_per_minute", 8)))
@@ -96,11 +100,19 @@ class LLM:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
+    def _next_model(self) -> bool:
+        """Move to the next fallback model. Returns False when none are left."""
+        i = self.models.index(self.model) if self.model in self.models else -1
+        if i + 1 < len(self.models):
+            self.model = self.models[i + 1]
+            return True
+        return False
+
     # ------------------------------------------------------------------ api
     def complete(self, system: str, prompt: str, want_json: bool = False) -> str | None:
         if not self.enabled:
             return None
-        for attempt in range(3):
+        for attempt in range(3 + len(self.models)):
             self._pace()
             self.calls += 1
             try:
@@ -109,6 +121,9 @@ class LLM:
                 return self._openai_compat(system, prompt, want_json)
             except requests.HTTPError as e:
                 code = e.response.status_code if e.response is not None else 0
+                if code in (404, 503) and self._next_model():
+                    log.warning("LLM model unavailable (%s); switching to %s", code, self.model)
+                    continue
                 if code == 429 and attempt < 2:
                     wait = 30 * (attempt + 1)
                     log.warning("LLM rate-limited (429); waiting %ss", wait)

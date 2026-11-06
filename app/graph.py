@@ -36,14 +36,17 @@ class PipelineState(TypedDict, total=False):
     max_leads: int
     send: bool
     ignore_window: bool
+    as_member: str | None
     results: dict[str, Any]
 
 
 class Agents:
     """Builds every agent once with shared tools."""
 
-    def __init__(self, cfg: Config, db: DB):
-        self.cfg, self.db = cfg, db
+    def __init__(self, cfg: Config, db: DB, as_member: str | None = None):
+        if as_member and not cfg.member(as_member):
+            raise ValueError(f"unknown team member '{as_member}'. Members: {', '.join(m['id'] for m in cfg.members)}")
+        self.cfg, self.db, self.as_member = cfg, db, as_member
         self.fetcher = PoliteFetcher(cfg, db)
         self.geo = Geo(cfg)
         self.llm = LLM(cfg)
@@ -65,13 +68,13 @@ class Agents:
         return QualificationAgent(self.cfg, self.db, self.llm)
 
     def matching(self) -> MatchingAgent:
-        return MatchingAgent(self.cfg, self.db)
+        return MatchingAgent(self.cfg, self.db, sender_override=self.as_member)
 
     def email(self) -> EmailAgent:
         return EmailAgent(self.cfg, self.db, self.llm)
 
     def sender(self) -> SenderAgent:
-        return SenderAgent(self.cfg, self.db)
+        return SenderAgent(self.cfg, self.db, only_member=self.as_member)
 
     def close(self) -> None:
         self.fetcher.close()
@@ -130,10 +133,10 @@ def build_graph(cfg: Config, a: Agents):
 
 
 def run_pipeline(cfg: Config, db: DB, stages: list[str] | None = None, max_leads: int | None = None,
-                 send: bool = False, ignore_window: bool = False) -> dict:
-    a = Agents(cfg, db)
+                 send: bool = False, ignore_window: bool = False, as_member: str | None = None) -> dict:
+    a = Agents(cfg, db, as_member)
     state: PipelineState = {"stages": stages or STAGES, "max_leads": max_leads or 0, "send": send,
-                            "ignore_window": ignore_window, "results": {}}
+                            "ignore_window": ignore_window, "as_member": as_member, "results": {}}
     try:
         try:
             graph = build_graph(cfg, a)

@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Company identity + the team members who sign and send emails.
+# Non-secret. Passwords / app passwords go in .env only.
+# ---------------------------------------------------------------------------
+company:
+  legal_name: "FocusTrigger Automation Pvt Ltd"    # used in signatures
+  short_name: "FocusTrigger Automation"            # used in sentences: "At FocusTrigger Automation, we build..."
+  website: "https://focustriggerautomation.com"
+  email: "focustriggerautomation@gmail.com"        # shared company mailbox (SMTP_USER / IMAP_USER in .env)
+  phone: ""                                        # shown in signatures when a member has no phone
+
+# How the From name looks in the recipient's inbox. Placeholders: {name} {company} {legal_name}
+from_name_format: "{name} | {company}"
+
+# Each lead is assigned one member when it is matched.
+#   default     -> everyone's leads go to default_member (or whoever runs `--as <id>`)
+#   round_robin -> spread new leads across active members
+assignment: default
+default_member: amartya                           # (env: DEFAULT_SENDER)
+
+# Mailboxes:
+#   By default every member sends from the shared company mailbox above, with
+#   their own name as the display name and in the signature.
+#   To let a member send from their OWN mailbox, fill their `email` and add to .env:
+#     SMTP_PASSWORD_<ID>=app-password    (ID = member id in UPPER_CASE)
+#   optional: SMTP_USER_<ID>, SMTP_HOST_<ID>, SMTP_PORT_<ID>, IMAP_HOST_<ID>, IMAP_PASSWORD_<ID>
+#   The daily send limit applies per mailbox.
+members:
+  - id: amartya
+    name: "Amartya"
+    title: ""            # e.g. "Founder", shown under the name in the signature
+    email: ""            # blank = shared company mailbox
+    phone: ""
+    active: true
+
+  # - id: priya
+  #   name: "Priya Das"
+  #   title: "Business Development"
+  #   email: ""
+  #   phone: "+91 90000 00000"
+  #   active: true
