@@ -8,6 +8,13 @@
   <span class="small muted" style="flex:1 1 240px">Test the database, Gmail (sending + inbox) and Gemini with the current settings. Nothing is sent.</span>
   <button type="submit">Check connections</button>
 </form>
+<form method="post" action="{{ url_for('admin_test_email') }}" class="card inline">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <span class="small muted" style="flex:1 1 240px">Send one sample email through Gmail right now, to your own address.
+    It isn't a lead: send window, approval and limits don't apply (max 5 per hour).</span>
+  <input type="text" name="to" placeholder="you@example.com" aria-label="Send test to" required>
+  <button class="primary" type="submit">Send test email</button>
+</form>
 {% endif %}
 <div class="card scroll">
   <p class="small muted">{{ company.legal_name }} · {{ company.website }} · assignment: {{ team.get('assignment', 'default') }}</p>

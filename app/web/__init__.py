@@ -585,9 +585,55 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
                 raise RuntimeError("no valid reply (see function logs)")
             return f"{llm.provider} / {llm.model} OK"
         run("Gemini (LLM)", llm_check)
-        db.log(actor(), "connection_check", None, {n: ok for n, ok, _ in results})
+        # Error texts from smtplib/imaplib contain server replies, never our passwords.
+        db.log(actor(), "connection_check", None, {n: ("OK" if ok else d) for n, ok, d in results})
         for name, ok, detail in results:
             flash(f"{'✓' if ok else '✗'} {name}: {detail}", "ok" if ok else "error")
+        return redirect(url_for("team"))
+
+    @app.post("/admin/test-email")
+    @admin_required
+    def admin_test_email():
+        """Send one sample email through the real mailbox to an address the admin chooses,
+        to prove sending works. Ignores the send window and approval (it's not a lead);
+        limited to 5 per hour; never touches leads, limits or the do-not-email list."""
+        import re as _re
+        from datetime import timedelta
+
+        from app.agents.email_writer import apply_signature
+        from app.agents.sender import SenderAgent
+
+        to = request.form.get("to", "").strip()
+        if not _re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", to):
+            flash("Enter a valid email address to send the test to.", "error")
+            return redirect(url_for("team"))
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
+        if db.scalar("SELECT count(*) FROM events WHERE event='test_email' AND ts>=?", (since,)) >= 5:
+            flash("Test email limit reached (5 per hour). Try again later.", "error")
+            return redirect(url_for("team"))
+        member = g.user["member"]
+        proj = next((p for p in g.cfg.portfolio if p.get("kind") == "client"), g.cfg.portfolio[0])
+        body = apply_signature(g.cfg, (
+            "Hi Sample Company team,\n\n"
+            "This is a TEST of the FocusTrigger lead outreach system. A real email looks like this, "
+            "personalised from the prospect's own website.\n\n"
+            f"At {g.cfg.company['short_name']}, we build fast, mobile-friendly websites for growing businesses. "
+            f"One recent project of ours is {proj['domain']}: {proj['description']}.\n\n"
+            "Would you be open to a 15-minute call next week?"), member)
+        lead = {"email": to, "email_subject": "[Test] Quick idea for Sample Company's website", "email_body": body}
+        sender = SenderAgent(g.cfg, db)
+        mailbox = g.cfg.mailbox(member)
+        try:
+            msg = sender.build_message(lead, member, mailbox)
+            smtp = sender.connect(mailbox)
+            smtp.send_message(msg)
+            smtp.quit()
+            db.log(actor(), "test_email", None, {"to": to, "result": "sent", "from": msg["From"]})
+            flash(f"Test email sent to {to} from {msg['From']}. Check that inbox (and Spam).", "ok")
+        except Exception as e:
+            detail = f"{type(e).__name__}: {str(e)[:200]}"
+            db.log(actor(), "test_email", None, {"to": to, "result": detail})
+            flash(f"Sending failed: {detail}", "error")
         return redirect(url_for("team"))
 
     @app.errorhandler(400)

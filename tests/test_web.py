@@ -320,3 +320,45 @@ def test_admin_connection_check(client, cfg, db, monkeypatch):
     assert "✓ Database" in page and "✓ Gmail sending" in page and "✓ Gmail inbox" in page
     assert "app-pass" not in page                     # never echo secrets
     assert "✗ Gemini" in page                         # LLM disabled in tests -> reported, not crashed
+
+
+def test_admin_test_email(client, cfg, db, monkeypatch):
+    import smtplib
+
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): ...
+        def ehlo(self): ...
+        def has_extn(self, n): return False
+        def login(self, *a): ...
+        def quit(self): ...
+        def send_message(self, m): sent.append(m)
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    _login(client)
+    token = _csrf(client, "/team")
+    r = client.post("/admin/test-email", data={"csrf": token, "to": "me@example.org"}, follow_redirects=True)
+    assert "Test email sent to me@example.org" in r.get_data(as_text=True)
+    assert sent and sent[0]["To"] == "me@example.org" and sent[0]["Subject"].startswith("[Test]")
+    assert "collectiqservices.com" in sent[0].get_content() and db.all_leads() == []
+    for _ in range(5):
+        client.post("/admin/test-email", data={"csrf": token, "to": "me@example.org"})
+    r = client.post("/admin/test-email", data={"csrf": token, "to": "me@example.org"}, follow_redirects=True)
+    assert "limit reached" in r.get_data(as_text=True) and len(sent) == 5
+
+
+def test_connection_check_records_error_text(client, cfg, db, monkeypatch):
+    import smtplib
+
+    class Refuse:
+        def __init__(self, *a, **k): ...
+        def ehlo(self): ...
+        def has_extn(self, n): return False
+        def login(self, *a): raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
+
+    monkeypatch.setattr(smtplib, "SMTP", Refuse)
+    _login(client)
+    client.post("/admin/check", data={"csrf": _csrf(client, "/team")})
+    detail = db.last_event("web:amartya", "connection_check")["detail"]
+    assert "SMTPAuthenticationError" in detail and "not accepted" in detail and "app-pass" not in detail
