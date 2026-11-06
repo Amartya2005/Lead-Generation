@@ -43,8 +43,12 @@ INDUSTRY_PHRASE = {
 
 SYSTEM = """You write B2B cold emails for a small Indian software studio. Hard rules:
 - Body (greeting to call-to-action, excluding signature) is at most {max_words} words. Aim for 70-100.
-- Mention exactly ONE portfolio project: {domain}, described only as: "{description}".
+- Start with exactly: "Hi {company} team,"
+- Mention exactly ONE portfolio project and write its domain as plain text, exactly: {domain}
+  (e.g. "...such as {domain}, ..."). Describe it only as: "{description}".
   Do not add any results, numbers, metrics, client names, testimonials or features not in that description.
+- Don't claim experience, expertise, a track record or other clients ("we have helped...", "extensive
+  experience", "we help businesses like yours"). The one project above is the only proof you may cite.
 - Personalise only with the facts given. If observed_problem is empty, don't invent one.
 - Professional, warm, plain English. No hype, no exclamation marks, no "I hope this finds you well".
 - End with one clear, low-pressure call-to-action question (e.g. a 15-minute call).
@@ -139,7 +143,8 @@ class EmailAgent:
         if not (self.use_llm and self.llm.enabled):
             return None
         proj = f["project"]
-        system = SYSTEM.format(max_words=self.max_words - 10, domain=proj["domain"], description=proj["description"])
+        system = SYSTEM.format(max_words=self.max_words - 10, domain=proj["domain"], description=proj["description"],
+                               company=f["company"])
         prompt = (
             f"Facts:\n- company: {f['company']}\n- city: {f['city'] or 'unknown'}\n- industry: {f['industry']}\n"
             f"- observed_problem (from their website, may be empty): {f['observed_problem']}\n"

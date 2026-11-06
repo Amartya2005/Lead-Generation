@@ -17,6 +17,9 @@ FORBIDDEN = [
     (r"\bsaved\s+(?:them\s+|our clients\s+)?\d", "savings claim"),
     (r"\b(roi|guarantee\w*|case stud(y|ies)|testimonial)\b", "unsupported claim"),
     (r"\b(trusted by|clients like|hundreds of|thousands of|award[- ]winning|#1|number one|leading provider)\b", "unsupported claim"),
+    (r"\b(extensive|proven|years of|deep|wide) (experience|expertise)\b|\btrack record\b|\bwe(?: have|'ve)? helped\b"
+     r"|\bhelps? (?:\w+ ){0,4}(?:businesses|companies|clients|institutes|firms)\b|\bour clients\b|\bmany (?:clients|businesses)\b",
+     "unsupported experience/client claim"),
     (r"\b(act now|limited time|free trial|risk[- ]free|don't miss|exclusive offer|100% free|click here)\b", "salesy phrase"),
     (r"!{2,}", "multiple exclamation marks"),
     (r"\[[^\]]+\]|\{[^}]+\}", "unfilled placeholder"),

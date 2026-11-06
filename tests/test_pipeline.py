@@ -367,8 +367,11 @@ def test_assign_rematches_personal_portfolio(cfg, db, monkeypatch):
 
 def test_llm_falls_back_to_next_model_on_503(cfg, monkeypatch):
     import requests
+
+    import app.llm as llm_mod
     from app.llm import LLM
 
+    llm_mod._UNAVAILABLE.clear()  # process-wide memory of busy models
     cfg.settings["llm"].update(provider="gemini", requests_per_minute=10000)
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     calls = []
@@ -408,3 +411,16 @@ def test_db_migrates_old_schema(tmp_path):
     db = DB(path)
     cols = {r[1] for r in db.query("PRAGMA table_info(leads)")}
     assert {"sender_id", "sent_from"} <= cols
+
+
+def test_validator_catches_soft_experience_claims(cfg):
+    from app.tools.email_rules import validate
+
+    kw = dict(allowed_domains=cfg.allowed_email_domains, required_domain="collectiqservices.com", allowed_numbers={"15"})
+    for claim in ("We have extensive experience delivering digital solutions",
+                  "FocusTrigger helps coaching and education businesses in Bhubaneswar build websites",
+                  "We've helped dozens of firms", "Our clients love it"):
+        body = f"Hi team,\n\n{claim}. See collectiqservices.com.\n\nWould a 15-minute call work?\n\nRegards,\nA"
+        assert any("unsupported experience" in p for p in validate("Hi", body, **kw)), claim
+    ok = "Hi team,\n\nWe build websites. One recent project is collectiqservices.com.\n\nWould a 15-minute call work?\n\nRegards,\nA"
+    assert validate("Hi", ok, **kw) == []
