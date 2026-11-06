@@ -1,9 +1,9 @@
 # Deploy on Vercel + Supabase (free tiers)
 
 ```
- GitHub Actions (every 10 min, 07:30–20:20 IST)      Vercel Cron (daily backup trigger)
-              │  GET /api/tick                              │
-              ▼                                             ▼
+ Supabase pg_cron + pg_net (every 10 min, 07:30–20:20 IST)   Vercel Cron (daily backup)
+              │  GET /api/tick          (+ optional GitHub Actions schedule)  │
+              ▼                                                               ▼
  ┌───────────────────── Vercel (region bom1) ──────────────────────┐
  │  api/index.py  = Flask review page + /api/tick                  │   team: https://leads.focustriggerautomation.com
  │  each tick (≤ 4 min): 1 email, inbox sync, qualify/match/draft, │
@@ -17,7 +17,10 @@ Vercel has no long-running processes or persistent disk, so the design differs f
 
 * **Database:** Postgres via `DATABASE_URL`. Same tables as SQLite, created automatically, in a
   private `leadgen` schema that Supabase's public REST API can't reach.
-* **Scheduling:** `/api/tick` does at most about 4 minutes of work per call. The database enforces
+* **Scheduling:** the database itself is the clock. A `pg_cron` job (`leadgen-tick`, UTC
+  `*/10 2-14 * * 1-6`) calls `/api/tick` through `pg_net`. Check it in Supabase → Integrations → Cron,
+  or `select * from cron.job_run_details order by start_time desc limit 5;`. The GitHub Actions
+  workflow is a spare clock; extra calls are harmless. `/api/tick` does at most about 4 minutes of work per call. The database enforces
   spacing between ticks (4 minutes) and the random 90–300 s gap between emails, so extra calls change nothing.
 * **Sending:** at most one email per tick. Each lead is atomically claimed (`sending`) before the
   mail server is contacted, so it can never be sent twice. A send interrupted half-way is marked
@@ -69,7 +72,8 @@ redeploys in about a minute. Logins are managed on the site under **Logins** (ad
 
 * **Vercel Hobby** is for personal, non-commercial projects. A company tool should move to Pro
   to stay within Vercel's terms.
-* **GitHub** disables scheduled workflows in public repos after 60 days without a commit. The daily
-  Vercel Cron keeps the pipeline going, slowly, and any commit re-enables the workflow.
+* **GitHub** disables scheduled workflows in public repos after 60 days without a commit. That's
+  why the main clock is pg_cron in Supabase, with the daily Vercel Cron as a backup.
 * **Supabase free** projects pause after a week without activity. The ticks prevent that.
+* To pause everything: `select cron.alter_job(1, active := false);` (and `true` to resume).
 * DuckDuckGo may rate-limit Vercel's cloud IPs. Research then skips that tick and tries again later.
