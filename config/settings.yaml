@@ -25,10 +25,14 @@ crawl:
   max_body_chars: 600000
 
 research:
+  # Budgets for one manual `python main.py run`. NOT daily caps: the scheduled tick ignores them and
+  # uses the per-tick budgets under `tick:` below, so discovery continues all day.
   max_new_leads_per_run: 30
   queries_per_run: 8
   results_per_query: 10
   seconds_between_queries: [6, 12]   # random delay range between search calls
+  rate_limit_wait_seconds: 60        # CLI: one wait-and-retry on a DuckDuckGo rate limit (ticks never sleep)
+  search_backoff_minutes: [15, 240]  # after a rate limit: pause search 15 min, doubling up to 4 h; reset on success
   sources: [duckduckgo]              # add google_cse if you have a free CSE key
   # Only used if you add site:justdial.com / site:indiamart.com templates back to icp.yaml.
   # A listing is kept only when its company's OWN website is found (strict name-in-domain match).
@@ -38,6 +42,48 @@ research:
   # Outbound links on these pages become candidate companies.
   directory_pages: []
   #  - https://example-startup-directory.in/odisha
+  # Extra discovery sources (app/sources/). Each is independent and OFF until you set enabled: true.
+  # Results pass the same quality gate as search results, are deduplicated across sources
+  # (domain, or company name + city) and keep their provenance (source, source_url, evidence).
+  # A repeat sighting by another source is logged as a `seen_again` event on the existing lead.
+  # Check them with `python main.py sources`; run one with `python main.py research --source osm`.
+  # Deferred: X/Twitter (no free, compliant read access), Google Places (billed fields, storage limits).
+  adapters:
+    osm:                               # OpenStreetMap via the public Overpass API: free, no key
+      enabled: false
+      endpoint: https://overpass-api.de/api/interpreter
+      # One ICP city per request. Overpass wiki: 10,000 requests/day guideline, divided by 100 for a
+      # regularly used application (~100/day). We use a quarter of that, spread across the day.
+      max_requests_per_day: 24
+      min_minutes_between_requests: 30
+      max_requests_per_run: 1
+      cache_hours: 168                 # the same city isn't asked again for a week
+      timeout_seconds: 60
+      max_results_per_request: 150
+      # Only businesses that list their own website, in these OSM categories:
+      filters: ['["office"]', '["shop"]', '["craft"]', '["healthcare"]', '["industrial"]',
+                '["amenity"~"^(clinic|dentist|doctors|hospital|school|college|training|driving_school)$"]']
+    news_rss:                          # startup / SME news feeds -> the companies they report on
+      enabled: false
+      min_hours_between_fetches: 12
+      max_items_per_feed: 30
+      max_resolutions_per_day: 5       # website lookups via DuckDuckGo when the item has no company link
+      # A feed is fetched ONLY with terms: permitted. Checked 2026-11-17 (feeds and robots.txt allow access):
+      feeds:
+        - name: inc42
+          url: https://inc42.com/feed/
+          terms: prohibited            # Terms of Use: no bot/automated program may "access, acquire, copy, or
+                                       # monitor" content "without the prior express written consent of Inc42"
+        - name: entrackr
+          url: https://entrackr.com/rss
+          terms: prohibited            # Terms of Use: no "systematic or automated data collection ... without our
+                                       # express written consent"
+        - name: yourstory
+          url: https://yourstory.com/feed
+          terms: unverified            # terms page is behind a bot challenge; read it yourself before permitting
+        - name: yourstory_smbstory
+          url: https://yourstory.com/smbstory/feed
+          terms: unverified
 
 qualification:
   min_score: 6                # leads below this are discarded
@@ -53,6 +99,23 @@ tick:
   min_interval_seconds: 240    # extra calls inside this window are ignored
   inbox_every_seconds: 7200
   reserve_seconds: 45
+  # Continuous discovery. There is NO daily lead or query ceiling: every tick discovers as much as
+  # these per-tick budgets, the time budget, provider back-off and the backlog thresholds allow.
+  discovery:
+    queries_per_tick: 4          # DuckDuckGo queries per tick, paced by research.seconds_between_queries
+    max_new_leads_per_tick: 50   # safety valve for one tick (not a daily cap)
+    run_sources: true            # also run the research.adapters that are enabled
+  processing:
+    enrich_workers: 3            # company sites enriched in parallel (always different hosts)
+    max_enrich_per_tick: 40
+    qualify_batch: 30            # per pass; each tick makes two passes (before and after enrichment)
+    match_batch: 300             # cheap, no network
+    draft_batch: 30
+  backpressure:
+    # Leads waiting for enrichment or scoring ('discovered' + 'enriched'). At pause_discovery_at,
+    # ticks only drain the backlog; discovery resumes by itself once it is below resume_discovery_below.
+    pause_discovery_at: 120
+    resume_discovery_below: 60
 
 web:
   # Review page (python main.py web, or gunicorn on the server). Secrets: WEB_SECRET_KEY in .env.
@@ -84,6 +147,7 @@ storage:
   log_file: logs/run.log
   backup_dir: data/backups
   backup_keep_days: 14
+  stats_keep_days: 90         # per-source discovery counters (python main.py stats)
   google_sheets:
     enabled: false
     spreadsheet: "Lead Outreach"
@@ -230,4 +294,9 @@ skip_domains:
   - web.app
   - firebaseapp.com
   - square.site
+  # News / map sources: an article or map page is never a lead (the company it names may be)
+  - inc42.com
+  - yourstory.com
+  - entrackr.com
+  - openstreetmap.org
 skip_tlds: [gov.in, nic.in, gov, edu]

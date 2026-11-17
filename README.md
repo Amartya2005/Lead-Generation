@@ -72,6 +72,67 @@ python main.py review
 
 To turn sending back on later, set `sending.enabled: true` in a reviewed commit, then follow the steps below.
 
+### Continuous discovery (no daily lead cap)
+
+Every scheduled tick discovers new leads and processes existing ones, all day. There is no daily lead
+or query ceiling. `research.max_new_leads_per_run` and `queries_per_run` apply only to a manual `run`.
+`sending.daily_limit` (25) is an email limit and has nothing to do with discovery. Each tick is
+bounded by settings you can change in `config/settings.yaml` under `tick:`, with no code change:
+
+- **`tick.discovery`:** search queries per tick (4), a per-tick lead budget (50), and whether
+  enabled source adapters run.
+- **`tick.processing`:** sites enriched in parallel (3 workers), enrichment per tick (40), and
+  qualify/match/draft batch sizes.
+- **`tick.backpressure`:** when the backlog of leads waiting for enrichment or scoring reaches
+  `pause_discovery_at` (120), ticks only drain it. Discovery resumes by itself below
+  `resume_discovery_below` (60).
+- **Provider back-off:** stored in the database, so it holds across ticks. Search backs off
+  15 min → 4 h. OSM allows 24 requests/day, at least 30 min apart, and backs off 30 min → 24 h.
+
+Inside a tick, discovery runs in its own thread while a small pool enriches different company sites
+in parallel. Each worker has its own fetcher, so per-host delays and robots.txt are unchanged.
+Qualification, matching and drafting stay sequential because of LLM rate limits. A tick and a manual
+`run` share a lock and never process the same leads. Quality filters, official-website checks,
+deduplication, ICP scoring, `qualification.min_score` and portfolio confirmation are unchanged.
+
+```bash
+python main.py stats
+```
+Shows, per source, for today and the last 7 days: candidates, leads added, duplicates, rejections with
+reasons, unresolved, enriched, site rejected, qualified and ready for review. It also shows new leads per
+day, the backlog, whether discovery is paused, and the search back-off state.
+
+### Extra discovery sources (all off by default)
+
+Configured under `research.adapters` in `config/settings.yaml`. Each source is independent and runs
+only when its `enabled` is `true`.
+
+Every result is handled the same way as a search result:
+- It goes through the same quality filters.
+- It is deduplicated across sources, by domain, or by company name plus city.
+- It is saved with its provenance: `source`, `source_url`, `query`, the evidence in `snippet`, and the
+  discovery date in `created_at`.
+- If another source finds an existing lead again, a `seen_again` event with that source's evidence is
+  added to the lead's history.
+
+| Source | What it does | Limits | Status |
+|---|---|---|---|
+| `osm` | Finds businesses on OpenStreetMap (Overpass API) that list their own website, in ICP categories. Cities are taken least-recently-used first, Odisha first. | 4 requests/day, one city each, cached for a week, exponential back-off after any error, robots.txt checked. Every lead keeps "© OpenStreetMap contributors (ODbL)" in its evidence. | Off. Overpass couldn't be reached from the build environment, so the first live run is untested. |
+| `news_rss` | Takes the company each headline is about from startup/SME news feeds, then finds the company's official website. That is a link in the item whose domain carries the company name, or one strict DuckDuckGo lookup (5/day). | Each feed is fetched at most every 12 h, with robots.txt checked. **A feed runs only with `terms: permitted`.** | Off. Checked 2026-11-17: Inc42's and Entrackr's terms forbid automated collection without written consent; YourStory's terms couldn't be read. |
+| X/Twitter | Not implemented: no free, compliant read access (the official API is pay-per-use). | | Deferred |
+| Google Places | Not implemented: website and phone are billed Enterprise fields, and Places content can't be stored. | | Deferred |
+
+Geographic fit is decided by the existing ICP. Enrichment locates each company from its own website
+and Qualification scores it: Odisha first, then Tier-2/3; anything outside India is discarded.
+
+```bash
+python main.py sources
+```
+
+```bash
+python main.py research --source osm
+```
+
 ## Folder structure
 
 ```
@@ -381,8 +442,10 @@ which limits prompt injection from scraped sites.
 - **IndiaMART / Justdial:** only the titles that appear in search results are read. The pipeline then
   searches for the company's own site. It does not crawl those directories.
 - **DuckDuckGo** is queried through the `ddgs` library, which uses DDG's HTML endpoint and isn't covered by
-  our robots.txt checker. Keep volume low (default 8 queries per run, 6–12 s apart). If you get
-  rate-limited, the run stops searching and continues with the leads it already has.
+  our robots.txt checker. Queries are paced 6–12 s apart, with 4 per scheduled tick (`tick.discovery.queries_per_tick`)
+  and 8 per manual `run`. On a rate limit, search pauses for 15 minutes, doubling up to 4 hours, and resumes
+  after the next successful query. Ticks never sleep through a rate limit. Other sources and lead processing
+  carry on in the meantime.
 - **LinkedIn** is only taken from links on the company's own website. LinkedIn is never crawled.
 - **Startup directories:** add public listing pages you're allowed to crawl under
   `research.directory_pages`. robots.txt is still checked.

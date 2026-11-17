@@ -277,11 +277,14 @@ class DB:
                 self._connect()
                 return self.conn.execute(self._sql(q), params)
 
+    # Reads hold the lock until rows are fetched: tick worker threads share this connection.
     def query(self, q: str, args: Iterable = ()) -> list[Row]:
-        return self.execute(q, args).fetchall()
+        with self._lock:
+            return self.execute(q, args).fetchall()
 
     def one(self, q: str, args: Iterable = ()) -> Row | None:
-        return self.execute(q, args).fetchone()
+        with self._lock:
+            return self.execute(q, args).fetchone()
 
     def scalar(self, q: str, args: Iterable = ()) -> Any:
         row = self.one(q, args)
@@ -326,6 +329,12 @@ class DB:
         self.execute("INSERT INTO kv(key, value, updated_at) VALUES (?,?,?) "
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                      (key, value, now()))
+
+    def kv_incr(self, key: str, n: int = 1) -> None:
+        """Atomic counter (analytics); works on SQLite and Postgres."""
+        self.execute("INSERT INTO kv(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                     "value=CAST(CAST(kv.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT), "
+                     "updated_at=excluded.updated_at", (key, str(int(n)), now()))
 
     # ---------------------------------------------------------------- leads
     def find_lead(self, domain: str | None = None, company: str | None = None, city: str | None = None):
@@ -488,7 +497,9 @@ class DB:
             "ON CONFLICT(query) DO UPDATE SET source=excluded.source, ran_at=excluded.ran_at, results=excluded.results",
             (query, source, now(), results))
 
-    def queries_since(self, since_iso: str) -> int:
+    def queries_since(self, since_iso: str, source: str | None = None) -> int:
+        if source:
+            return self.scalar("SELECT count(*) FROM queries WHERE ran_at>=? AND source=?", (since_iso, source))
         return self.scalar("SELECT count(*) FROM queries WHERE ran_at>=?", (since_iso,))
 
     # ------------------------------------------------------------ http cache

@@ -26,6 +26,7 @@ def cfg(tmp_path, monkeypatch):
     s["crawl"].update(per_host_delay_seconds=0, use_playwright_fallback=False, cache_hours=0)
     s["sending"].update(min_delay_seconds=0, max_delay_seconds=0, send_window={}, enabled=True)
     s["storage"]["db_path"] = str(tmp_path / "leads.db")
+    s["tick"]["discovery"]["queries_per_tick"] = 0  # no live web search from tests; tests that need search fake it
     (cdir / "settings.yaml").write_text(yaml.safe_dump(s))
     team = yaml.safe_load((cdir / "team.yaml").read_text())
     team["members"].append({"id": "priya", "name": "Priya Das", "title": "Business Development",

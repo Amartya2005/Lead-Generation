@@ -4,6 +4,9 @@
   python main.py run                 # research -> enrich -> qualify -> match -> draft (never sends)
   python main.py review              # approve / edit / reject drafts (human approval mode)
   python main.py portfolio           # which portfolio projects are confirmed (only those are used)
+  python main.py sources             # discovery sources (OSM, news feeds): enabled? limits, terms, usage
+  python main.py stats               # per-source throughput today and over the last 7 days
+  python main.py research --source osm   # run one enabled source adapter
   python main.py send                # disabled while sending.enabled is false (lead-generation-only mode)
   python main.py sync-inbox          # mark replies/bounces and suppress them
   python main.py report              # Company | Website | Location | Score | Project | Draft | Status
@@ -89,6 +92,83 @@ def cmd_stage(stage: str):
                                     send=(stage == "send"), ignore_window=getattr(args, "ignore_window", False),
                                     as_member=getattr(args, "as_member", None)))
     return run
+
+
+def cmd_research(args) -> None:
+    if not args.source:
+        return cmd_stage("research")(args)
+    from app.graph import Agents
+    from app.sources import build_adapters
+
+    cfg, db = _ctx(args)
+    a = Agents(cfg, db)
+    try:
+        agent = a.research()
+        ad = next((x for x in build_adapters(cfg, db, a.fetcher, a.geo) if x.name == args.source), None)
+        if not ad:
+            sys.exit(f"unknown source '{args.source}' (see: python main.py sources)")
+        if not ad.enabled:
+            console.print(f"[yellow]Source '{args.source}' is disabled. Set research.adapters.{args.source}.enabled: "
+                          "true in config/settings.yaml to run it.[/]")
+            return
+        _print_results(agent.run_sources(args.max_leads, only=args.source))
+    finally:
+        a.close()
+
+
+def cmd_sources(args) -> None:
+    from app.graph import Agents
+    from app.sources import DEFERRED, build_adapters
+
+    cfg, db = _ctx(args)
+    a = Agents(cfg, db)
+    t = Table("source", "enabled", "today", "limits", "details", title="Discovery sources (research.adapters)")
+    for ad in build_adapters(cfg, db, a.fetcher, a.geo):
+        st, c = ad.status(), ad.conf
+        if ad.name == "osm":
+            limits = f"{c.get('max_requests_per_day', 4)} req/day, cache {c.get('cache_hours', 168)} h"
+            details = c.get("endpoint", "")
+        else:
+            limits = f"every {c.get('min_hours_between_fetches', 12)} h, {c.get('max_resolutions_per_day', 0)} lookups/day"
+            details = ", ".join(f"{n}: {'[green]' if v == 'permitted' else '[red]'}{v}[/]" for n, v in st["feeds"].items())
+        t.add_row(ad.name, "[green]yes[/]" if st["enabled"] else "no", f"{st['requests_today']} requests",
+                  limits, details + (f"\n[yellow]{st['backoff']}[/]" if st["backoff"] else ""))
+    for name, why in DEFERRED.items():
+        t.add_row(name, "[dim]n/a[/]", "", "", f"[dim]{why}[/]")
+    console.print(t)
+    found = db.query("SELECT source, count(*) AS n FROM leads WHERE source='osm' OR source LIKE 'news:%' GROUP BY source")
+    if found:
+        console.print("Leads by source: " + ", ".join(f"{r['source']}={r['n']}" for r in found))
+    a.close()
+
+
+def cmd_stats(args) -> None:
+    from app.tools import stats
+
+    cfg, db = _ctx(args)
+    cols = ["candidates", "added", "duplicate", "rejected", "unresolved", "enriched", "site_rejected", "qualified",
+            "ready_for_review"]
+    for title, days in (("today", 1), (f"last {args.days} days", args.days)):
+        data = stats.throughput(cfg, db, days)
+        t = Table("source", *[c.replace("_", " ") for c in cols], "top rejection reasons", title=f"Lead discovery: {title}")
+        total = {c: 0 for c in cols}
+        for src in sorted(data, key=lambda k: -data[k].get("added", 0)):
+            m = data[src]
+            row = {c: m.get(c, 0) for c in cols}
+            row["rejected"] = sum(v for k, v in m.items() if k.startswith("rejected:"))
+            reasons = sorted(((k.split(":", 1)[1], v) for k, v in m.items() if k.startswith("rejected:")), key=lambda x: -x[1])
+            t.add_row(src, *[str(row[c]) for c in cols], ", ".join(f"{k} {v}" for k, v in reasons[:3]))
+            for c in cols:
+                total[c] += row[c]
+        t.add_row("[bold]total[/]", *[f"[bold]{total[c]}[/]" for c in cols], "")
+        console.print(t)
+    console.print("New leads per day: " + "  ".join(f"{d[5:]}: {n}" for d, n in stats.daily_added(cfg, db, args.days)))
+    paused = db.kv_get("discovery_paused") == "1"
+    backlog = db.scalar("SELECT count(*) FROM leads WHERE status IN ('discovered','enriched')")
+    from app.tools.backoff import cooling_down
+    search = cooling_down(db, "search:backoff")
+    console.print(f"Backlog (waiting for enrichment/scoring): {backlog} · discovery "
+                  f"{'[yellow]paused[/]' if paused else 'running'} · search {search or 'ok'}")
 
 
 def cmd_add_lead(args) -> None:
@@ -345,6 +425,9 @@ def main(argv: list[str] | None = None) -> int:
         if stage in ("match", "write"):
             s.add_argument("--as", dest="as_member", metavar="MEMBER", help="team member who signs these drafts")
         s.set_defaults(func=cmd_stage(stage))
+        if stage == "research":
+            s.add_argument("--source", metavar="NAME", help="run only this source adapter (e.g. osm, news_rss)")
+            s.set_defaults(func=cmd_research)
 
     a = sub.add_parser("add-lead", help="seed a company website manually")
     a.add_argument("url")
@@ -392,6 +475,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("team", help="show company identity, members and mailboxes").set_defaults(func=cmd_team)
     sub.add_parser("portfolio", help="which portfolio projects are confirmed").set_defaults(func=cmd_portfolio)
+    sub.add_parser("sources", help="discovery sources: enabled, limits, terms, usage").set_defaults(func=cmd_sources)
+    st = sub.add_parser("stats", help="per-source lead discovery throughput (today and last N days)")
+    st.add_argument("--days", type=int, default=7)
+    st.set_defaults(func=cmd_stats)
 
     w = sub.add_parser("web", help="run the review page locally (dev mode, http)")
     w.add_argument("--host", default="127.0.0.1")

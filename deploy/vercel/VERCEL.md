@@ -6,8 +6,8 @@
               ▼                                                               ▼
  ┌───────────────────── Vercel (region bom1) ──────────────────────┐
  │  api/index.py  = Flask review page + /api/tick                  │   team: https://leads.focustriggerautomation.com
- │  each tick (≤ 4 min): 1 email, inbox sync, qualify/match/draft, │
- │  enrich a few sites, 1 research query                           │──▶ Gmail SMTP/IMAP
+ │  each tick (≤ 4 min): qualify/match/draft, enrich sites (3 in   │
+ │  parallel) while discovering (4 queries + enabled sources)      │──▶ Gmail SMTP/IMAP
  └──────────────────────────────┬──────────────────────────────────┘
                                 ▼
               Supabase Postgres (ap-south-1), schema "leadgen"
@@ -22,6 +22,10 @@ Vercel has no long-running processes or persistent disk, so the design differs f
   or `select * from cron.job_run_details order by start_time desc limit 5;`. The GitHub Actions
   workflow is a spare clock; extra calls are harmless. `/api/tick` does at most about 4 minutes of work per call. The database enforces
   spacing between ticks (4 minutes) and the random 90–300 s gap between emails, so extra calls change nothing.
+* **Discovery:** continuous; every tick runs it unless the backlog is over `tick.backpressure` or
+  search is backing off after a rate limit. There is no daily lead cap (see README, "Continuous discovery").
+  Widening the schedule (e.g. all day, every day) is a one-line cron change in Supabase and in
+  `.github/workflows/tick.yml`, but every extra tick uses Vercel function time on the free plan.
 * **Sending:** skipped entirely while `sending.enabled` is false in `config/settings.yaml`
   (lead-generation-only mode, the current default); inbox sync is skipped too. When enabled: at most one email per tick. Each lead is atomically claimed (`sending`) before the
   mail server is contacted, so it can never be sent twice. A send interrupted half-way is marked
