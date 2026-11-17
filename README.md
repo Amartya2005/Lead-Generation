@@ -72,6 +72,36 @@ python main.py review
 
 To turn sending back on later, set `sending.enabled: true` in a reviewed commit, then follow the steps below.
 
+### Continuous discovery (no daily lead cap)
+
+Every scheduled tick discovers new leads and processes existing ones, all day. There is no daily lead
+or query ceiling. `research.max_new_leads_per_run` and `queries_per_run` apply only to a manual `run`.
+`sending.daily_limit` (25) is an email limit and has nothing to do with discovery. Each tick is
+bounded by settings you can change in `config/settings.yaml` under `tick:`, with no code change:
+
+- **`tick.discovery`:** search queries per tick (4), a per-tick lead budget (50), and whether
+  enabled source adapters run.
+- **`tick.processing`:** sites enriched in parallel (3 workers), enrichment per tick (40), and
+  qualify/match/draft batch sizes.
+- **`tick.backpressure`:** when the backlog of leads waiting for enrichment or scoring reaches
+  `pause_discovery_at` (120), ticks only drain it. Discovery resumes by itself below
+  `resume_discovery_below` (60).
+- **Provider back-off:** stored in the database, so it holds across ticks. Search backs off
+  15 min → 4 h. OSM allows 24 requests/day, at least 30 min apart, and backs off 30 min → 24 h.
+
+Inside a tick, discovery runs in its own thread while a small pool enriches different company sites
+in parallel. Each worker has its own fetcher, so per-host delays and robots.txt are unchanged.
+Qualification, matching and drafting stay sequential because of LLM rate limits. A tick and a manual
+`run` share a lock and never process the same leads. Quality filters, official-website checks,
+deduplication, ICP scoring, `qualification.min_score` and portfolio confirmation are unchanged.
+
+```bash
+python main.py stats
+```
+Shows, per source, for today and the last 7 days: candidates, leads added, duplicates, rejections with
+reasons, unresolved, enriched, site rejected, qualified and ready for review. It also shows new leads per
+day, the backlog, whether discovery is paused, and the search back-off state.
+
 ### Extra discovery sources (all off by default)
 
 Configured under `research.adapters` in `config/settings.yaml`. Each source is independent and runs
@@ -412,8 +442,10 @@ which limits prompt injection from scraped sites.
 - **IndiaMART / Justdial:** only the titles that appear in search results are read. The pipeline then
   searches for the company's own site. It does not crawl those directories.
 - **DuckDuckGo** is queried through the `ddgs` library, which uses DDG's HTML endpoint and isn't covered by
-  our robots.txt checker. Keep volume low (default 8 queries per run, 6–12 s apart). If you get
-  rate-limited, the run stops searching and continues with the leads it already has.
+  our robots.txt checker. Queries are paced 6–12 s apart, with 4 per scheduled tick (`tick.discovery.queries_per_tick`)
+  and 8 per manual `run`. On a rate limit, search pauses for 15 minutes, doubling up to 4 hours, and resumes
+  after the next successful query. Ticks never sleep through a rate limit. Other sources and lead processing
+  carry on in the meantime.
 - **LinkedIn** is only taken from links on the company's own website. LinkedIn is never crawled.
 - **Startup directories:** add public listing pages you're allowed to crawl under
   `research.directory_pages`. robots.txt is still checked.
