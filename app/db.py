@@ -277,11 +277,14 @@ class DB:
                 self._connect()
                 return self.conn.execute(self._sql(q), params)
 
+    # Reads hold the lock until rows are fetched: tick worker threads share this connection.
     def query(self, q: str, args: Iterable = ()) -> list[Row]:
-        return self.execute(q, args).fetchall()
+        with self._lock:
+            return self.execute(q, args).fetchall()
 
     def one(self, q: str, args: Iterable = ()) -> Row | None:
-        return self.execute(q, args).fetchone()
+        with self._lock:
+            return self.execute(q, args).fetchone()
 
     def scalar(self, q: str, args: Iterable = ()) -> Any:
         row = self.one(q, args)

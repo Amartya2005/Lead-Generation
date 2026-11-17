@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -101,10 +103,14 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
         db.prune_cache(float(cfg.settings["crawl"].get("cache_hours", 72)))
         _stamp(db, "cache_pruned")
 
-    # 3) pipeline: drain the backlog, then discover (no daily ceiling; per-tick budgets only)
+    # 3) pipeline: drain the backlog while discovering (no daily ceiling; per-tick budgets only).
+    # Shares the "run" lock with `python main.py run`, so the two never process the same leads.
     a = Agents(cfg, db)
     try:
-        out.update(_pipeline(cfg, db, a, left, t, float(t.get("reserve_seconds", 45))))
+        with db.lock("run", ttl_seconds=int(float(t.get("budget_seconds", 240))) + 120):
+            out.update(_pipeline(cfg, db, a, left, t, float(t.get("reserve_seconds", 45))))
+    except AlreadyRunning:
+        out["pipeline"] = {"skipped": "a pipeline run is in progress"}
     finally:
         a.close()
     out["seconds_left"] = round(left())
@@ -147,10 +153,50 @@ def _discover(cfg: Config, db: DB, a, deadline: float, d: dict) -> tuple[int, di
     return new, sources
 
 
+def _enrich(cfg: Config, db: DB, left, reserve: float, p: dict) -> int:
+    """Enrich 'discovered' leads with a small thread pool. Each worker has its own fetcher;
+    leads are distinct companies (unique domains), so per-host politeness is unchanged.
+    Every lead is handed to exactly one worker. Returns the number of sites visited."""
+    from app.graph import Agents
+
+    workers, limit = max(1, int(p.get("enrich_workers", 3))), int(p.get("max_enrich_per_tick", 40))
+    local, made, made_lock = threading.local(), [], threading.Lock()
+
+    def work(lead) -> bool:
+        if left() < reserve + 30:     # a site visit can take ~30 s
+            return False
+        if not hasattr(local, "agents"):
+            local.agents = Agents(cfg, db)
+            with made_lock:
+                made.append(local.agents)
+        try:
+            local.agents.enrichment().enrich_one(lead)
+            return True
+        except Exception as e:  # one bad site must not stop the others
+            log.exception("enrichment failed for lead %s: %s", lead["id"], e)
+            return False
+
+    seen: set[int] = set()
+    visited = 0
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="enrich") as pool:
+            while len(seen) < limit and left() > reserve + 30:
+                batch = [l for l in db.leads_by_status("discovered", limit=limit + len(seen)) if l["id"] not in seen]
+                batch = batch[: min(workers * 2, limit - len(seen))]
+                if not batch:
+                    break
+                seen.update(l["id"] for l in batch)
+                visited += sum(pool.map(work, [l for l in batch if l["website"]]))
+    finally:
+        for agents in made:
+            agents.close()
+    return visited
+
+
 def _pipeline(cfg: Config, db: DB, a, left, t: dict, reserve: float) -> dict:
     p, d = t.get("processing") or {}, t.get("discovery") or {}
     counts = {"drafted": 0, "matched": 0, "qualified": 0, "enriched": 0, "new_leads": 0}
-    qualifier, matcher, writer, enricher = a.qualification(), a.matching(), a.email(), a.enrichment()
+    qualifier, matcher, writer = a.qualification(), a.matching(), a.email()
 
     def downstream() -> None:
         """qualify -> match -> draft, in order, so a lead can go all the way in one pass."""
@@ -168,22 +214,40 @@ def _pipeline(cfg: Config, db: DB, a, left, t: dict, reserve: float) -> dict:
     out: dict = {}
     downstream()                      # finish what's already in the pipeline
     paused = _discovery_gate(db, t)
-    for lead in db.leads_by_status("discovered", limit=int(p.get("max_enrich_per_tick", 40))):
-        if left() < reserve + 30:     # a site visit can take ~30 s
-            break
-        if lead["website"]:
-            enricher.enrich_one(lead)
-            counts["enriched"] += 1
-    downstream()                      # carry new leads through to drafts
 
+    # Discovery runs in its own thread (own fetcher + search client) while this thread enriches.
+    found: dict = {}
+    worker = None
     if paused:
         out["discovery"] = paused
     elif left() > reserve + 40:
-        counts["new_leads"], sources = _discover(cfg, db, a, time.monotonic() + left() - reserve, d)
-        out["discovery"] = "ran"
-        if sources:
-            out["sources"] = sources
+        deadline = time.monotonic() + left() - reserve
+
+        def discover() -> None:
+            from app.graph import Agents
+
+            da = Agents(cfg, db)
+            try:
+                found["new"], found["sources"] = _discover(cfg, db, da, deadline, d)
+            except Exception as e:  # discovery problems must not stop processing
+                log.exception("discovery failed: %s", e)
+                found["error"] = type(e).__name__
+            finally:
+                da.close()
+
+        worker = threading.Thread(target=discover, name="discovery", daemon=True)
+        worker.start()
     else:
         out["discovery"] = "no time left this tick"
+
+    counts["enriched"] += _enrich(cfg, db, left, reserve, p)
+    if worker:
+        worker.join(timeout=max(0.0, left() - 5))
+        out["discovery"] = "still running at the deadline" if worker.is_alive() else found.get("error", "ran")
+        counts["new_leads"] = found.get("new", 0)
+        if found.get("sources"):
+            out["sources"] = found["sources"]
+        counts["enriched"] += _enrich(cfg, db, left, reserve, p)  # today's finds, if time is left
+    downstream()                      # carry new leads through to drafts
     out["pipeline"] = counts
     return out
