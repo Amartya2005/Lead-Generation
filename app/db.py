@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -16,6 +17,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
+
+log = logging.getLogger("db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
@@ -232,18 +235,31 @@ class DB:
     def _lock_down_api_access(self) -> None:
         """Supabase exposes the public schema over its REST API. Row-level security with no
         policies blocks that API (the table owner, i.e. this app, is unaffected), and API roles
-        lose their grants. Safe to run on every start."""
-        for t in self.TABLES:
-            self.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
-        self.execute("""
-            DO $$ DECLARE r text; BEGIN
-              FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
-                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-                  EXECUTE format('REVOKE ALL ON leads, suppression, events, queries, users, login_failures, '
-                                 'http_cache, kv, leases FROM %I', r);
-                END IF;
-              END LOOP;
-            END $$""")
+        lose their grants. Safe to run on every start.
+
+        Serverless instances often cold-start at the same moment. Postgres rejects concurrent
+        changes to the same table's permissions ("tuple concurrently updated"), so the whole
+        lock-down runs as one statement holding a transaction-scoped advisory lock (works through
+        a transaction pooler), and losing a race to another instance applying the identical
+        grants is not an error."""
+        tables, names = ", ".join(self.TABLES), ",".join(self.TABLES)
+        try:
+            self.execute(f"""
+                DO $$ DECLARE r text; t text; BEGIN
+                  PERFORM pg_advisory_xact_lock(hashtext('leadgen:lock_down_api_access'));
+                  FOREACH t IN ARRAY string_to_array('{names}', ',') LOOP
+                    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+                  END LOOP;
+                  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+                    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+                      EXECUTE format('REVOKE ALL ON {tables} FROM %I', r);
+                    END IF;
+                  END LOOP;
+                END $$""")
+        except Exception as e:
+            if not _concurrent_ddl(e):
+                raise
+            log.warning("API lock-down raced with another instance (%s); it applies the same grants", e)
 
     def _columns(self, table: str) -> set[str]:
         if self.pg:
@@ -256,8 +272,8 @@ class DB:
         for table, cols in MIGRATIONS.items():
             have = self._columns(table)
             for col, typ in cols.items():
-                if col not in have:
-                    self.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+                if col not in have:  # IF NOT EXISTS: two instances may migrate at the same moment
+                    self.execute(f"ALTER TABLE {table} ADD COLUMN {'IF NOT EXISTS ' if self.pg else ''}{col} {typ}")
 
     def _sql(self, q: str) -> str:
         return q.replace("?", "%s") if self.pg else q
@@ -523,6 +539,12 @@ class DB:
     def prune_cache(self, older_than_hours: float) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat(timespec="seconds")
         return self.execute("DELETE FROM http_cache WHERE fetched_at<?", (cutoff,)).rowcount
+
+
+def _concurrent_ddl(e: Exception) -> bool:
+    """Another instance changed the same catalog row at the same time (cold-start race)."""
+    msg = str(e).lower()
+    return "concurrently updated" in msg or "deadlock detected" in msg
 
 
 def _is_disconnect(e: Exception) -> bool:

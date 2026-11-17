@@ -25,5 +25,6 @@ jobs:
           code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 320 \
             ${CRON_SECRET:+-H "Authorization: Bearer $CRON_SECRET"} "$TICK_URL")
           echo "HTTP $code"
-          # 503 = site not configured yet (no database); don't fail the run for that.
-          [ "$code" = "200" ] || [ "$code" = "503" ]
+          # Anything but 200 fails the run, so GitHub emails you. A 503 means the app couldn't start
+          # (it used to be accepted while the site was being set up, which hid real outages).
+          [ "$code" = "200" ]
