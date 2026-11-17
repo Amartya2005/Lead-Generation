@@ -9,9 +9,12 @@ amount of work and stops before the function time limit:
      gap between emails are enforced from the database). SKIPPED while
      `sending.enabled` is false (lead-generation-only mode, the default).
   3. inbox sync, every 2 hours (also skipped in lead-generation-only mode: nothing was sent)
-  4. pipeline work: qualify -> match -> draft what's pending, enrich a few sites,
-     carry those through to drafts, then run one research query, then the enabled
-     source adapters (research.adapters; each has its own daily limits and back-off)
+  4. pipeline work: qualify -> match -> draft what's pending, enrich sites, carry those
+     through to drafts, then discover: several search queries plus the enabled source
+     adapters. There is no daily lead or query ceiling; each tick is bounded by its time
+     budget, the per-tick budgets in settings.yaml (tick.discovery / tick.processing),
+     provider back-off, and a backlog threshold that pauses discovery until the pipeline
+     catches up (tick.backpressure).
 
 Ticks never overlap (database lease) and are spaced at least `min_interval_seconds`
 apart, so calling the endpoint more often cannot speed up sending or crawling.
@@ -98,58 +101,88 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
         db.prune_cache(float(cfg.settings["crawl"].get("cache_hours", 72)))
         _stamp(db, "cache_pruned")
 
-    # 3) pipeline, downstream first
+    # 3) pipeline: drain the backlog, then discover (no daily ceiling; per-tick budgets only)
     a = Agents(cfg, db)
-    reserve = float(t.get("reserve_seconds", 45))  # stop starting new work this close to the limit
     try:
-        counts = {"drafted": 0, "matched": 0, "qualified": 0, "enriched": 0, "new_leads": 0}
-        qualifier, matcher, writer, enricher = a.qualification(), a.matching(), a.email(), a.enrichment()
-
-        def downstream() -> None:
-            """qualify -> match -> draft, in order, so a lead can go all the way in one pass."""
-            # Matching is cheap (no network), and leads waiting for portfolio confirmation stay
-            # 'qualified', so look further down that queue than the others.
-            for status, fn, key, n in (("enriched", qualifier.qualify_one, "qualified", 30),
-                                       ("qualified", matcher.match_one, "matched", 300),
-                                       ("matched", writer.draft_one, "drafted", 30)):
-                for lead in db.leads_by_status(status, limit=n):
-                    if left() < reserve:
-                        return
-                    res = fn(lead)
-                    counts[key] += res != "awaiting_portfolio"
-
-        downstream()                      # finish what's already in the pipeline
-        for lead in db.leads_by_status("discovered", limit=15):
-            if left() < reserve + 30:     # a site visit can take ~30 s
-                break
-            if lead["website"]:
-                enricher.enrich_one(lead)
-                counts["enriched"] += 1
-        downstream()                      # carry today's new leads through to drafts
-
-        # One research query per tick, until today's quota is used.
-        r = cfg.settings["research"]
-        day = _ist_day_start(cfg)
-        queries_today = db.queries_since(day, source="search")  # adapters keep their own counts
-        new_today = db.scalar("SELECT count(*) FROM leads WHERE created_at>=? AND source<>'manual'", (day,))
-        pending = db.scalar("SELECT count(*) FROM leads WHERE status='discovered'")
-        if (left() > reserve + 40 and queries_today < int(r.get("queries_per_run", 8))
-                and new_today < int(r.get("max_new_leads_per_run", 30)) and pending < 20):
-            agent = a.research()
-            queries = agent.build_queries()[:1]
-            if queries:
-                counts["new_leads"] = agent.run_search(int(r.get("max_new_leads_per_run", 30)) - new_today, queries,
-                                                       deadline=time.monotonic() + left() - reserve)
-
-        # Extra sources (OSM, news feeds ...): only those enabled in settings.yaml.
-        adapters = r.get("adapters") or {}
-        if (any((v or {}).get("enabled") is True for v in adapters.values()) and left() > reserve + 40
-                and pending < 20 and new_today + counts["new_leads"] < int(r.get("max_new_leads_per_run", 30))):
-            src = a.research().run_sources(int(r.get("max_new_leads_per_run", 30)) - new_today - counts["new_leads"],
-                                           deadline=time.monotonic() + left() - reserve)
-            out["sources"] = {k: v.get("added", 0) for k, v in src.items() if "skipped" not in v}
-        out["pipeline"] = counts
+        out.update(_pipeline(cfg, db, a, left, t, float(t.get("reserve_seconds", 45))))
     finally:
         a.close()
     out["seconds_left"] = round(left())
+    return out
+
+
+def _discovery_gate(db: DB, t: dict) -> str | None:
+    """Backpressure with hysteresis. Returns why discovery is paused, or None to discover."""
+    bp = t.get("backpressure") or {}
+    pause_at, resume_below = int(bp.get("pause_discovery_at", 120)), int(bp.get("resume_discovery_below", 60))
+    backlog = db.scalar("SELECT count(*) FROM leads WHERE status IN ('discovered','enriched')")
+    paused = db.kv_get("discovery_paused") == "1"
+    if paused and backlog < resume_below:
+        db.kv_set("discovery_paused", "0")
+        log.info("Backlog %d < %d: discovery resumed", backlog, resume_below)
+        paused = False
+    elif not paused and backlog >= pause_at:
+        db.kv_set("discovery_paused", "1")
+        log.info("Backlog %d >= %d: discovery paused until the pipeline catches up", backlog, pause_at)
+        paused = True
+    return f"paused: backlog {backlog} (resumes below {resume_below})" if paused else None
+
+
+def _discover(cfg: Config, db: DB, a, deadline: float, d: dict) -> tuple[int, dict]:
+    """Search queries for this tick, then the enabled source adapters, within one lead budget."""
+    agent = a.research()
+    budget = int(d.get("max_new_leads_per_tick", 50))
+    new = 0
+    if int(d.get("queries_per_tick", 4)) > 0:
+        queries = agent.build_queries(int(d.get("queries_per_tick", 4)))
+        if queries:
+            new = agent.run_search(budget, queries, deadline=deadline)
+    sources: dict = {}
+    adapters = cfg.settings["research"].get("adapters") or {}
+    if (d.get("run_sources", True) and any((v or {}).get("enabled") is True for v in adapters.values())
+            and new < budget and time.monotonic() < deadline):
+        res = agent.run_sources(budget - new, deadline=deadline)
+        sources = {k: v.get("added", 0) for k, v in res.items() if "skipped" not in v}
+    return new, sources
+
+
+def _pipeline(cfg: Config, db: DB, a, left, t: dict, reserve: float) -> dict:
+    p, d = t.get("processing") or {}, t.get("discovery") or {}
+    counts = {"drafted": 0, "matched": 0, "qualified": 0, "enriched": 0, "new_leads": 0}
+    qualifier, matcher, writer, enricher = a.qualification(), a.matching(), a.email(), a.enrichment()
+
+    def downstream() -> None:
+        """qualify -> match -> draft, in order, so a lead can go all the way in one pass."""
+        # Matching is cheap (no network), and leads waiting for portfolio confirmation stay
+        # 'qualified', so look further down that queue than the others.
+        for status, fn, key, n in (("enriched", qualifier.qualify_one, "qualified", int(p.get("qualify_batch", 30))),
+                                   ("qualified", matcher.match_one, "matched", int(p.get("match_batch", 300))),
+                                   ("matched", writer.draft_one, "drafted", int(p.get("draft_batch", 30)))):
+            for lead in db.leads_by_status(status, limit=n):
+                if left() < reserve:
+                    return
+                res = fn(lead)
+                counts[key] += res != "awaiting_portfolio"
+
+    out: dict = {}
+    downstream()                      # finish what's already in the pipeline
+    paused = _discovery_gate(db, t)
+    for lead in db.leads_by_status("discovered", limit=int(p.get("max_enrich_per_tick", 40))):
+        if left() < reserve + 30:     # a site visit can take ~30 s
+            break
+        if lead["website"]:
+            enricher.enrich_one(lead)
+            counts["enriched"] += 1
+    downstream()                      # carry new leads through to drafts
+
+    if paused:
+        out["discovery"] = paused
+    elif left() > reserve + 40:
+        counts["new_leads"], sources = _discover(cfg, db, a, time.monotonic() + left() - reserve, d)
+        out["discovery"] = "ran"
+        if sources:
+            out["sources"] = sources
+    else:
+        out["discovery"] = "no time left this tick"
+    out["pipeline"] = counts
     return out

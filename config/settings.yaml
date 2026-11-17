@@ -25,6 +25,8 @@ crawl:
   max_body_chars: 600000
 
 research:
+  # Budgets for one manual `python main.py run`. NOT daily caps: the scheduled tick ignores them and
+  # uses the per-tick budgets under `tick:` below, so discovery continues all day.
   max_new_leads_per_run: 30
   queries_per_run: 8
   results_per_query: 10
@@ -92,6 +94,23 @@ tick:
   min_interval_seconds: 240    # extra calls inside this window are ignored
   inbox_every_seconds: 7200
   reserve_seconds: 45
+  # Continuous discovery. There is NO daily lead or query ceiling: every tick discovers as much as
+  # these per-tick budgets, the time budget, provider back-off and the backlog thresholds allow.
+  discovery:
+    queries_per_tick: 4          # DuckDuckGo queries per tick, paced by research.seconds_between_queries
+    max_new_leads_per_tick: 50   # safety valve for one tick (not a daily cap)
+    run_sources: true            # also run the research.adapters that are enabled
+  processing:
+    enrich_workers: 3            # company sites enriched in parallel (always different hosts)
+    max_enrich_per_tick: 40
+    qualify_batch: 30            # per pass; each tick makes two passes (before and after enrichment)
+    match_batch: 300             # cheap, no network
+    draft_batch: 30
+  backpressure:
+    # Leads waiting for enrichment or scoring ('discovered' + 'enriched'). At pause_discovery_at,
+    # ticks only drain the backlog; discovery resumes by itself once it is below resume_discovery_below.
+    pause_discovery_at: 120
+    resume_discovery_below: 60
 
 web:
   # Review page (python main.py web, or gunicorn on the server). Secrets: WEB_SECRET_KEY in .env.

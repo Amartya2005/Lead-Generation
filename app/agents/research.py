@@ -109,7 +109,7 @@ class ResearchAgent:
     def _norm(text: str) -> str:
         return " " + " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split()) + " "
 
-    def build_queries(self) -> list[str]:
+    def build_queries(self, n: int | None = None) -> list[str]:
         """Least-recently-used rotation over the existing `queries` history: industries and
         cities never searched come first, then the ones searched longest ago. City groups are
         still drawn by icp.yaml city_mix (Odisha first); templates take turns."""
@@ -134,7 +134,8 @@ class ResearchAgent:
         rng = random.Random()
         queries: list[str] = []
         attempts = 0
-        while len(queries) < self.n_queries and attempts < 500:
+        n = self.n_queries if n is None else n
+        while len(queries) < n and attempts < 500:
             attempts += 1
             group = rng.choices(list(mix), weights=list(mix.values()))[0]
             industry = min(industries, key=lambda i: (ind_last[i], rng.random()))
