@@ -27,6 +27,9 @@ class SearchClient:
         self.gap = tuple(r.get("seconds_between_queries", [6, 12]))
         self.cse_key = cfg.env("GOOGLE_CSE_KEY")
         self.cse_cx = cfg.env("GOOGLE_CSE_CX")
+        # One wait-and-retry on a DuckDuckGo rate limit (CLI). Ticks set 0: raise at once and let
+        # the caller pause search across ticks (app.tools.backoff) instead of sleeping in a tick.
+        self.rate_limit_wait = float(r.get("rate_limit_wait_seconds", 60))
         self._last = 0.0
 
     def _pace(self) -> None:
@@ -69,9 +72,9 @@ class SearchClient:
             except Exception as e:
                 msg = str(e).lower()
                 if "ratelimit" in msg or "202" in msg or "429" in msg:
-                    if attempt == 0:
-                        log.warning("DuckDuckGo rate-limited; waiting 60s")
-                        time.sleep(60)
+                    if attempt == 0 and self.rate_limit_wait > 0:
+                        log.warning("DuckDuckGo rate-limited; waiting %.0fs", self.rate_limit_wait)
+                        time.sleep(self.rate_limit_wait)
                         continue
                     raise SearchRateLimited(str(e)) from e
                 log.warning("DuckDuckGo search failed for %r: %s", query, e)

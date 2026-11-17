@@ -130,7 +130,7 @@ def test_osm_results_normalised_gated_and_attributed(osm_cfg, db):
 def test_osm_daily_cap_and_lru_city_rotation(osm_cfg, db):
     from app.sources.osm import OsmAdapter
 
-    _enable(osm_cfg, "osm", max_requests_per_day=2)
+    _enable(osm_cfg, "osm", max_requests_per_day=2, min_minutes_between_requests=0)
     f = FakeFetcher({"overpass-api.de": '{"elements": []}'})
     agent = _agent(osm_cfg, db, f)
     for _ in range(3):
@@ -140,6 +140,17 @@ def test_osm_daily_cap_and_lru_city_rotation(osm_cfg, db):
     assert asked == {"osm:Bhubaneswar", "osm:Cuttack"}  # least-recently-used city first
     assert OsmAdapter(osm_cfg, db, f, None).requests_today() == 2
     assert db.queries_since("2000-01-01", source="search") == 0  # doesn't eat the search quota
+
+
+def test_osm_minimum_gap_between_requests(osm_cfg, db):
+    f = FakeFetcher({"overpass-api.de": '{"elements": []}'})
+    agent = _agent(osm_cfg, db, f)
+    agent.run_sources()
+    agent.run_sources()
+    assert len(f.calls) == 1  # default: 30 min between requests
+    db.execute("UPDATE queries SET ran_at='2000-01-01T00:00:00+00:00' WHERE source='osm'")
+    agent.run_sources()
+    assert len(f.calls) == 2
 
 
 @pytest.mark.parametrize("error", [FetchError("HTTP 429"), RobotsDisallowed("robots"), FetchError("timed out")])

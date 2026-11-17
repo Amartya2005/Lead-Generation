@@ -31,6 +31,8 @@ research:
   queries_per_run: 8
   results_per_query: 10
   seconds_between_queries: [6, 12]   # random delay range between search calls
+  rate_limit_wait_seconds: 60        # CLI: one wait-and-retry on a DuckDuckGo rate limit (ticks never sleep)
+  search_backoff_minutes: [15, 240]  # after a rate limit: pause search 15 min, doubling up to 4 h; reset on success
   sources: [duckduckgo]              # add google_cse if you have a free CSE key
   # Only used if you add site:justdial.com / site:indiamart.com templates back to icp.yaml.
   # A listing is kept only when its company's OWN website is found (strict name-in-domain match).
@@ -50,7 +52,10 @@ research:
     osm:                               # OpenStreetMap via the public Overpass API: free, no key
       enabled: false
       endpoint: https://overpass-api.de/api/interpreter
-      max_requests_per_day: 4          # one ICP city per request; Overpass asks regular apps to stay far below 10k/day
+      # One ICP city per request. Overpass wiki: 10,000 requests/day guideline, divided by 100 for a
+      # regularly used application (~100/day). We use a quarter of that, spread across the day.
+      max_requests_per_day: 24
+      min_minutes_between_requests: 30
       max_requests_per_run: 1
       cache_hours: 168                 # the same city isn't asked again for a week
       timeout_seconds: 60

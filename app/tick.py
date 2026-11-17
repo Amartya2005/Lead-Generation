@@ -131,6 +131,7 @@ def _discovery_gate(db: DB, t: dict) -> str | None:
 def _discover(cfg: Config, db: DB, a, deadline: float, d: dict) -> tuple[int, dict]:
     """Search queries for this tick, then the enabled source adapters, within one lead budget."""
     agent = a.research()
+    agent.search.rate_limit_wait = 0  # back off across ticks instead of sleeping in this one
     budget = int(d.get("max_new_leads_per_tick", 50))
     new = 0
     if int(d.get("queries_per_tick", 4)) > 0:

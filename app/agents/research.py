@@ -32,12 +32,14 @@ from bs4 import BeautifulSoup
 
 from app.config import Config
 from app.db import DB, loads
+from app.tools import backoff
 from app.tools.domains import host, is_skipped, normalize_url, registered_domain
 from app.tools.geo import Geo
 from app.tools.http import FetchError, PoliteFetcher, RobotsDisallowed
 from app.tools.search import SearchClient, SearchRateLimited
 
 log = logging.getLogger("research")
+SEARCH_BACKOFF = "search:backoff"
 
 DIRECTORY_HOSTS = ("justdial.com", "indiamart.com", "tradeindia.com", "sulekha.com")
 LISTING_TITLE = re.compile(
@@ -93,6 +95,7 @@ class ResearchAgent:
         self.keep_unresolved = bool(r.get("keep_listings_without_website", False))
         self.skip_domains = cfg.settings.get("skip_domains", []) + [p["domain"] for p in cfg.portfolio]
         self.skip_tlds = cfg.settings.get("skip_tlds", [])
+        self.search_backoff = r.get("search_backoff_minutes") or [15, 240]
         excl = cfg.icp.get("query_exclude_sites") or []
         self.exclude = " ".join(f"-site:{d}" for d in excl)
         icp = cfg.icp
@@ -262,8 +265,9 @@ class ResearchAgent:
         if not url and c.resolve and budget.get("resolutions", 0) > 0:
             budget["resolutions"] -= 1
             try:
-                url = self._resolve_website(name, c.city_hint)
-            except SearchRateLimited:
+                url = None if self.search_paused() else self._resolve_website(name, c.city_hint)
+            except SearchRateLimited as e:
+                self._rate_limited(e)
                 budget["resolutions"] = 0
         if not url:
             return "unresolved"
@@ -302,6 +306,13 @@ class ResearchAgent:
             log.info("Source %s: %s", adapter.name, dict(counts) or "nothing new")
         return out
 
+    def search_paused(self) -> str | None:
+        return backoff.cooling_down(self.db, SEARCH_BACKOFF)
+
+    def _rate_limited(self, e: Exception) -> None:
+        backoff.back_off(self.db, SEARCH_BACKOFF, f"search rate limit: {e}",
+                         first=int(self.search_backoff[0]), cap=int(self.search_backoff[1]))
+
     def _resolve_website(self, name: str, city: str | None) -> str | None:
         """The listing's own website: its domain must carry the company's name."""
         q = f"\"{name}\" {city or ''} official website".strip()
@@ -319,14 +330,19 @@ class ResearchAgent:
 
         out_of_time = lambda: deadline is not None and _time.monotonic() > deadline  # noqa: E731
         added = 0
+        paused = self.search_paused()
+        if paused:
+            log.info("Search skipped: %s", paused)
+            return 0
         for q in (self.build_queries() if queries is None else queries):
             if added >= budget or out_of_time():
                 break
             try:
                 results = self.search.search(self._q(q), self.per_query)
             except SearchRateLimited as e:
-                log.warning("Search rate limit hit, stopping research for this run: %s", e)
+                self._rate_limited(e)  # later runs/ticks skip search until the back-off expires
                 break
+            backoff.reset(self.db, SEARCH_BACKOFF)
             self.db.record_query(q, "search", len(results))
             log.info("Query %r -> %d results", q, len(results))
             for r in results:
@@ -341,7 +357,8 @@ class ResearchAgent:
                     if self.resolve_dirs and not out_of_time():
                         try:
                             site = self._resolve_website(name, self.geo.city_from_query(q))
-                        except SearchRateLimited:
+                        except SearchRateLimited as e:
+                            self._rate_limited(e)
                             break
                     if not site and not self.keep_unresolved:
                         continue  # no website of its own -> no email to find; don't spend the lead budget

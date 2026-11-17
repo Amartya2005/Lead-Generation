@@ -15,15 +15,15 @@ module with a SourceAdapter subclass, listed in build_adapters().
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
 from app.config import Config
 from app.db import DB
+from app.tools import backoff
 
 log = logging.getLogger("sources")
 
@@ -89,23 +89,14 @@ class SourceAdapter:
 
     # ------------------------------------------------------------- back-off
     def cooling_down(self) -> str | None:
-        state = json.loads(self.db.kv_get(f"source:{self.name}:backoff", "{}") or "{}")
-        until = state.get("until")
-        if until and datetime.fromisoformat(until) > datetime.now(timezone.utc):
-            return f"backing off until {until} ({state.get('why', '')})"
-        return None
+        return backoff.cooling_down(self.db, f"source:{self.name}:backoff")
 
     def back_off(self, why: str) -> None:
         """Exponential: 30 min, 1 h, 2 h ... capped at 24 h. Reset after a success."""
-        state = json.loads(self.db.kv_get(f"source:{self.name}:backoff", "{}") or "{}")
-        minutes = min(int(state.get("minutes", 15)) * 2, 24 * 60)
-        until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
-        self.db.kv_set(f"source:{self.name}:backoff", json.dumps({"until": until, "minutes": minutes, "why": why[:200]}))
-        log.warning("%s: %s; backing off %d min", self.name, why, minutes)
+        backoff.back_off(self.db, f"source:{self.name}:backoff", f"{self.name}: {why}", first=30, cap=24 * 60)
 
     def reset_backoff(self) -> None:
-        if self.db.kv_get(f"source:{self.name}:backoff"):
-            self.db.kv_set(f"source:{self.name}:backoff", "{}")
+        backoff.reset(self.db, f"source:{self.name}:backoff")
 
 
 def build_adapters(cfg: Config, db: DB, fetcher, geo) -> list[SourceAdapter]:

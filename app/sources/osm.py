@@ -3,8 +3,10 @@
 For one ICP city per request, asks for businesses that list their own website
 (`website` / `contact:website` tags) in ICP-relevant categories. Conservative by design:
 
-  * a few requests per day (research.adapters.osm.max_requests_per_day), one per run,
-    cities rotated least-recently-used (Odisha weighted first via icp.yaml city_mix)
+  * one request per run, at least min_minutes_between_requests apart and at most
+    max_requests_per_day (default 24, a quarter of the ~100/day the Overpass wiki implies for a
+    regularly used application: 10,000/day guideline divided by 100); cities rotated
+    least-recently-used (Odisha weighted first via icp.yaml city_mix)
   * responses cached for a week; robots.txt, User-Agent and per-host delay via PoliteFetcher
   * no in-call retry loop: a 429/5xx/timeout puts the whole adapter into exponential back-off
   * attribution "© OpenStreetMap contributors (ODbL)" is kept in every lead's evidence
@@ -18,6 +20,7 @@ import json
 import logging
 import random
 import time
+from datetime import datetime
 from typing import Iterator
 from urllib.parse import urlencode
 
@@ -81,9 +84,13 @@ class OsmAdapter(SourceAdapter):
         if why:
             log.info("osm: %s", why)
             return
-        per_day = int(self.conf.get("max_requests_per_day", 4))
+        per_day = int(self.conf.get("max_requests_per_day", 24))
+        gap = float(self.conf.get("min_minutes_between_requests", 30)) * 60
         for _ in range(int(self.conf.get("max_requests_per_run", 1))):
             if self.requests_today() >= per_day or (deadline is not None and time.monotonic() > deadline):
+                return
+            last = self.db.scalar("SELECT max(ran_at) FROM queries WHERE source=?", (self.name,))
+            if last and time.time() - datetime.fromisoformat(last).timestamp() < gap:
                 return
             city = self.next_city()
             url = self.endpoint + "?" + urlencode({"data": self.build_query(city)})
