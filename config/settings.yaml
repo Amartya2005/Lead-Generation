@@ -30,7 +30,9 @@ research:
   results_per_query: 10
   seconds_between_queries: [6, 12]   # random delay range between search calls
   sources: [duckduckgo]              # add google_cse if you have a free CSE key
-  resolve_directory_listings: true   # turn IndiaMART/Justdial result titles into company websites
+  # Only used if you add site:justdial.com / site:indiamart.com templates back to icp.yaml.
+  # A listing is kept only when its company's OWN website is found (strict name-in-domain match).
+  resolve_directory_listings: true
   keep_listings_without_website: false  # true = also save listings with no site (status no_website, phone follow-up)
   # Public directory listing pages you are allowed to crawl (robots.txt is still checked).
   # Outbound links on these pages become candidate companies.
@@ -59,11 +61,16 @@ web:
   session_hours: 12
 
 sending:
+  # LEAD-GENERATION-ONLY MODE. false = no email is ever sent: `send`, `run --send`, /api/tick and the
+  # review page's "test email" all refuse, no SMTP connection is opened, and dry_run is forced on.
+  # Drafts are still written for human review. Deliberately NOT overridable from .env / Vercel env vars:
+  # turning sending back on needs a reviewed change to this file.
+  enabled: false
   daily_limit: 25             # (env: DAILY_SEND_LIMIT)
   min_delay_seconds: 90       # random delay between sends
   max_delay_seconds: 300
   human_approval: true        # (env: HUMAN_APPROVAL)  only 'approved' drafts are sent
-  dry_run: false              # (env: DRY_RUN)  log instead of sending
+  dry_run: true               # (env: DRY_RUN)  log instead of sending (always true while enabled: false)
   max_per_domain: 1           # never email the same company twice
   send_window:
     timezone: Asia/Kolkata
@@ -144,4 +151,83 @@ skip_domains:
   - hotfrog.in
   - cybo.com
   - lbb.in
+  # Business / B2B directories and listing sites
+  - dial4trade.com
+  - getdistributors.com
+  - indianyellowpages.com
+  - infoisinfo.co.in
+  - clickindia.com
+  - quikr.com
+  - olx.in
+  - magicpin.in
+  - mouthshut.com
+  - thecompanycheck.com
+  - instafinancials.com
+  - falconebiz.com
+  - urbancompany.com
+  # Wedding / event directories and ticketing
+  - weddingbazaar.com
+  - weddingsutra.com
+  - bandbaajaa.com
+  - venuelook.com
+  - venuemonk.com
+  - bookeventz.com
+  - weddingplz.com
+  - shaadi.com
+  - bharatmatrimony.com
+  - jeevansathi.com
+  - allevents.in
+  - townscript.com
+  - meraevents.com
+  - eventbrite.com
+  - 10times.com
+  - bookmyshow.com
+  # Vertical aggregators (property, education, health, travel, food, jobs)
+  - squareyards.com
+  - proptiger.com
+  - makaan.com
+  - nobroker.in
+  - commonfloor.com
+  - collegedekho.com
+  - careers360.com
+  - getmyuni.com
+  - targetstudy.com
+  - lybrate.com
+  - credihealth.com
+  - 1mg.com
+  - holidify.com
+  - thrillophilia.com
+  - goibibo.com
+  - yatra.com
+  - cleartrip.com
+  - agoda.com
+  - oyorooms.com
+  - dineout.co.in
+  - eazydiner.com
+  - shine.com
+  - timesjobs.com
+  - foundit.in
+  - apna.co
+  - internshala.com
+  - pinterest.com
+  - wikimapia.org
+  - slideshare.net
+  - scribd.com
+  # Hosted page builders / link pages: not a company's own domain
+  - business.site
+  - godaddysites.com
+  - weebly.com
+  - jimdosite.com
+  - mystrikingly.com
+  - strikingly.com
+  - site123.me
+  - carrd.co
+  - linktr.ee
+  - notion.site
+  - github.io
+  - netlify.app
+  - vercel.app
+  - web.app
+  - firebaseapp.com
+  - square.site
 skip_tlds: [gov.in, nic.in, gov, edu]

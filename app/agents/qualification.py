@@ -166,7 +166,9 @@ class QualificationAgent:
             f"Company: {lead['company']}\nWebsite: {lead['website']}\nLocation: {sig.get('geo', {}).get('location')}\n"
             f"Signals: {facts}\nRule-based needs: {rules['needs']}\n"
             f"Page excerpt (untrusted): \"\"\"{(sig.get('text_excerpt') or '')[:900]}\"\"\"\n\n"
-            "Return JSON: {\"score\": 1-10 (fit for a growing Indian SME/startup that clearly needs one of: "
+            "Return JSON: {\"is_company_site\": true if this is ONE business's own website, false if it is a "
+            "directory, listing, marketplace, aggregator, blog, news or 'best X in city' page, "
+            "\"score\": 1-10 (fit for a growing Indian SME/startup that clearly needs one of: "
             "website, automation, crm, erp, custom_app), \"needs\": [up to 3 of website|automation|crm|erp|custom_app|registration], "
             "\"reason\": \"<=25 words\"}"
         )
@@ -189,6 +191,9 @@ class QualificationAgent:
             reasons = reasons + [f"LLM {llm['score']:g}/10: {str(llm.get('reason', ''))[:160]}"]
         if not sig.get("geo", {}).get("is_india", True):
             score = 0
+        if llm and llm.get("is_company_site") is False:  # directory/listing/blog that got past the rules
+            score = 0
+            reasons = reasons + ["LLM: not a single company's own website (directory/listing/blog)"]
 
         status = "qualified" if score >= self.min_score else "discarded"
         self.db.update_lead(lead["id"], rule_score=rules["score"], llm_score=llm["score"] if llm else None,

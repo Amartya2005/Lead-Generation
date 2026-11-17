@@ -1,11 +1,18 @@
 # ---------------------------------------------------------------------------
-# PORTFOLIO: the ONLY work the Email Agent is allowed to mention.
+# PORTFOLIO: the ONLY work the Matching and Email agents are allowed to use.
 #
-# Rules enforced in code:
-#   * An email may link only to domains listed here (plus SENDER_WEBSITE).
-#   * Emails citing a project with `confirmed: false` are drafted but NEVER sent.
-#     Review each description, make it exact, then set `confirmed: true`.
-#   * Do not add results, metrics or client names you cannot back up.
+# EVERY PROJECT MUST BE CONFIRMED BY A HUMAN BEFORE IT IS USED:
+#   * `confirmed: false` -> the Matching Agent ignores the project completely: no lead is matched
+#     to it and no draft cites it. Qualified leads wait (match_reason "waiting for portfolio
+#     confirmation") and are matched automatically on the next run once you confirm.
+#   * Check each description against the live site, then set `confirmed: true` yourself.
+#     `python main.py portfolio` shows what is confirmed and what is still blocking drafts.
+#
+# Description rules (checked on load; a confirmed project that breaks them is treated as UNconfirmed
+# and flagged by `python main.py portfolio` and on the review page's dashboard):
+#   * at most 120 characters, one plain sentence fragment ("the website and booking system for X")
+#   * only what was actually built and is visible: no numbers, results, metrics, client names you
+#     can't back up, "award-winning", "leading", etc. The text is pasted into emails verbatim.
 #
 # capabilities: what the project shows you can do. Used by the Matching Agent.
 #   website | automation | crm | erp | custom_app | event | community | registration

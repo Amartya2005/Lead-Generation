@@ -30,7 +30,9 @@ from app.config import Config, _config_dirs
 from app.db import DB, loads, now, open_db
 
 log = logging.getLogger("web")
-STATUS_TABS = ["drafted", "approved", "needs_contact", "sent", "replied", "bounced", "rejected", "discarded"]
+STATUS_TABS = ["drafted", "approved", "needs_contact", "qualified", "sent", "replied", "bounced", "rejected", "discarded"]
+STATUS_LABELS = {"drafted": "ready for review", "approved": "approved", "qualified": "qualified / waiting",
+                 "needs_contact": "no email found"}
 _DUMMY_HASH = generate_password_hash(secrets.token_hex(16))  # equal-time check for unknown usernames
 
 
@@ -151,8 +153,11 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
     def inject():
         if "csrf" not in session:
             session["csrf"] = secrets.token_urlsafe(32)
+        from app.tools.report import review_status
+
         return {"user": g.get("user"), "csrf": session["csrf"], "company": g.cfg.company, "nonce": g.nonce,
-                "loads": loads, "member_name": lambda mid: (g.cfg.member(mid) or {}).get("name", mid or "—")}
+                "loads": loads, "member_name": lambda mid: (g.cfg.member(mid) or {}).get("name", mid or "—"),
+                "sending_enabled": g.cfg.sending_enabled, "review_status": lambda lead: review_status(g.cfg, lead)}
 
     def login_required(fn):
         @wraps(fn)
@@ -288,13 +293,17 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
                                             "creds": bool(mb["smtp_user"] and mb["smtp_password"]), "members": []})
             mailboxes[mb["id"]]["members"].append(m["name"])
         warnings = []
-        if c.settings["sending"]["dry_run"]:
+        if not c.sending_enabled:
+            warnings.append("Lead-generation-only mode: sending is disabled. Drafts are for review only; "
+                            "approving a draft never emails anyone.")
+        elif c.settings["sending"]["dry_run"]:
             warnings.append("DRY_RUN is on: approved emails are logged, not sent. Set DRY_RUN=false in .env when ready.")
-        unconfirmed = [p["domain"] for p in c.portfolio if not p.get("confirmed")]
+        unconfirmed = [p["domain"] for p in c.unconfirmed_projects]
         if unconfirmed:
-            warnings.append("Portfolio not confirmed (emails citing these won't send): " + ", ".join(unconfirmed))
+            warnings.append("Portfolio not confirmed, so Matching and drafts ignore: " + ", ".join(unconfirmed)
+                            + ". Check each description and set confirmed: true in config/portfolio.yaml.")
         for mid, mb in mailboxes.items():
-            if not mb["creds"]:
+            if c.sending_enabled and not mb["creds"]:
                 warnings.append(f"No SMTP password for mailbox {mb['from']} ({mid}).")
         last = {k: db.last_event(*v) for k, v in {"research": ("research", "discovered"),
                                                   "draft": ("email", "drafted"), "send": ("sender", "sent")}.items()}
@@ -376,7 +385,8 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
             return redirect(url_for("lead_detail", lead_id=lead_id))
         db.update_lead(lead_id, status="approved", approved_at=now())
         db.log(actor(), "approved", lead_id)
-        flash("Approved. It will go out in the next send run (within the send window).", "ok")
+        flash("Approved. It will go out in the next send run (within the send window)." if g.cfg.sending_enabled
+              else "Approved (reviewed). Sending is disabled, so nothing is emailed.", "ok")
         return redirect(_next_draft_url(lead_id))
 
     @app.post("/leads/<int:lead_id>/reject")
@@ -441,10 +451,15 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
         if lead["status"] not in ("drafted", "needs_contact", "approved") or not lead["matched_project"]:
             abort(409)
         a = Agents(g.cfg, db)
-        a.email().draft_one(lead)
+        status, _ = a.email().draft_one(lead)
+        if status == "requeued":  # its project isn't confirmed: try a confirmed one now
+            a.matching().match_one(db.get_lead(lead_id), member_id=lead["sender_id"])
+            if db.get_lead(lead_id)["status"] == "matched":
+                status, _ = a.email().draft_one(db.get_lead(lead_id))
         a.close()
         db.log(actor(), "redrafted", lead_id)
-        flash("New draft written.", "ok")
+        flash("New draft written." if status != "requeued" and db.get_lead(lead_id)["status"] != "qualified"
+              else "No confirmed portfolio project fits this lead yet; it waits in 'qualified'.", "ok")
         return redirect(url_for("lead_detail", lead_id=lead_id))
 
     def _next_draft_url(after_id: int) -> str:
@@ -610,8 +625,11 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
         from datetime import timedelta
 
         from app.agents.email_writer import apply_signature
-        from app.agents.sender import SenderAgent
+        from app.agents.sender import DISABLED, SenderAgent
 
+        if not g.cfg.sending_enabled:
+            flash(f"Not sent: {DISABLED}.", "error")
+            return redirect(url_for("team"))
         to = request.form.get("to", "").strip()
         if not _re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", to):
             flash("Enter a valid email address to send the test to.", "error")
@@ -635,7 +653,7 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
         try:
             msg = sender.build_message(lead, member, mailbox)
             smtp = sender.connect(mailbox)
-            smtp.send_message(msg)
+            sender.deliver(smtp, msg)
             smtp.quit()
             db.log(actor(), "test_email", None, {"to": to, "result": "sent", "from": msg["From"]})
             flash(f"Test email sent to {to} from {msg['From']}. Check that inbox (and Spam).", "ok")
@@ -651,6 +669,10 @@ def create_app(dev: bool = False, cfg: Config | None = None, db: DB | None = Non
     @app.errorhandler(409)
     def error(e):
         return render_template("error.html", error=e), e.code
+
+    @app.template_filter("status_label")
+    def status_label(status: str | None) -> str:
+        return STATUS_LABELS.get(status or "", (status or "").replace("_", " "))
 
     @app.template_filter("ago")
     def ago(ts: str | None) -> str:

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ lead.company }}{% endblock %}
 {% block content %}
-<p class="small"><a href="{{ url_for('leads', status=lead.status) }}">← {{ lead.status|replace('_', ' ') }}</a></p>
-<h1>{{ lead.company }} <span class="chip">{{ lead.status|replace('_', ' ') }}</span></h1>
+<p class="small"><a href="{{ url_for('leads', status=lead.status) }}">← {{ lead.status|status_label }}</a></p>
+{% set rs = review_status(lead) %}
+<h1>{{ lead.company }} <span class="chip {{ 'good' if rs == 'ready_for_review' else '' }}">{{ rs|replace('_', ' ') }}</span></h1>
 
 <div class="two">
   <div>
@@ -13,7 +14,7 @@
           <dt>To</dt><dd>{{ lead.email or 'no email found' }}</dd>
           <dt>From</dt><dd>{{ member_name(lead.sender_id) }} ({{ company.short_name }})</dd>
           <dt>Project</dt><dd>{% if proj %}{{ proj.domain }}
-            {% if proj.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed, won't send</span>{% endif %}{% endif %}</dd>
+            {% if proj.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed: confirm it or write a new draft</span>{% endif %}{% endif %}</dd>
         </dl>
         {% if problems %}
           <div class="flash error"><b>Fix before approving:</b><ul class="reasons">{% for p in problems %}<li>{{ p }}</li>{% endfor %}</ul></div>

@@ -6,8 +6,9 @@ amount of work and stops before the function time limit:
 
   1. mark leads stuck in 'sending' as failed (never re-sent)
   2. send at most ONE approved email (window, daily limit, suppression and the random
-     gap between emails are enforced from the database)
-  3. inbox sync, every 2 hours
+     gap between emails are enforced from the database). SKIPPED while
+     `sending.enabled` is false (lead-generation-only mode, the default).
+  3. inbox sync, every 2 hours (also skipped in lead-generation-only mode: nothing was sent)
   4. pipeline work: qualify -> match -> draft what's pending, enrich a few sites,
      carry those through to drafts, then run one research query
 
@@ -78,11 +79,11 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
     sender = SenderAgent(cfg, db)
     out["recovered"] = sender.recover_stuck()
 
-    # 1) at most one email
-    out["send"] = sender.send_one()
+    # 1) at most one email (never in lead-generation-only mode)
+    out["send"] = sender.send_one() if cfg.sending_enabled else {"skipped": "sending disabled"}
 
     # 2) inbox: replies + bounces
-    if _due(db, "inbox_last", int(t.get("inbox_every_seconds", 7200))) and left() > 60:
+    if cfg.sending_enabled and _due(db, "inbox_last", int(t.get("inbox_every_seconds", 7200))) and left() > 60:
         from app.tools.imap_sync import sync_inbox
 
         try:
@@ -105,14 +106,16 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
 
         def downstream() -> None:
             """qualify -> match -> draft, in order, so a lead can go all the way in one pass."""
-            for status, fn, key in (("enriched", qualifier.qualify_one, "qualified"),
-                                    ("qualified", matcher.match_one, "matched"),
-                                    ("matched", writer.draft_one, "drafted")):
-                for lead in db.leads_by_status(status, limit=30):
+            # Matching is cheap (no network), and leads waiting for portfolio confirmation stay
+            # 'qualified', so look further down that queue than the others.
+            for status, fn, key, n in (("enriched", qualifier.qualify_one, "qualified", 30),
+                                       ("qualified", matcher.match_one, "matched", 300),
+                                       ("matched", writer.draft_one, "drafted", 30)):
+                for lead in db.leads_by_status(status, limit=n):
                     if left() < reserve:
                         return
-                    fn(lead)
-                    counts[key] += 1
+                    res = fn(lead)
+                    counts[key] += res != "awaiting_portfolio"
 
         downstream()                      # finish what's already in the pipeline
         for lead in db.leads_by_status("discovered", limit=15):

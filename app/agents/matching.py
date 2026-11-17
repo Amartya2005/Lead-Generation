@@ -5,6 +5,10 @@ Deterministic on purpose: a project can only be matched if its declared
 `capabilities` cover the need, so the email can never claim work that isn't there.
 Client work is preferred over our own/personal sites as the example, and a
 personal portfolio (`owner:` in portfolio.yaml) is only offered to its owner.
+
+Only projects with `confirmed: true` are ever matched. A qualified lead that only an
+unconfirmed project could cover stays `qualified` ("waiting for portfolio confirmation")
+and is matched on a later run, once a human has confirmed that project.
 """
 from __future__ import annotations
 
@@ -20,10 +24,12 @@ NEED_ALIASES = {"registration": ["registration", "event", "community"], "custom_
 
 
 def best_project(cfg: Config, needs: list[str], industry: str | None,
-                 member_id: str | None = None) -> tuple[dict | None, str]:
+                 member_id: str | None = None, include_unconfirmed: bool = False) -> tuple[dict | None, str]:
     best, best_score, best_hits = None, -1.0, []
     for proj in cfg.portfolio:
         if not cfg.project_allowed_for(proj, member_id):
+            continue
+        if not proj["confirmed"] and not include_unconfirmed:
             continue
         caps = set(proj["capabilities"])
         score, hits = 0.0, []
@@ -71,6 +77,13 @@ class MatchingAgent:
         needs = loads(lead["needs"], []) or ["website"]
         proj, why = best_project(self.cfg, needs, lead["industry"], member_id)
         if not proj:
+            pending, _ = best_project(self.cfg, needs, lead["industry"], member_id, include_unconfirmed=True)
+            if pending:  # keep the lead; it is matched once a human confirms the project
+                why = f"waiting for portfolio confirmation: {pending['domain']} covers these needs but is not confirmed"
+                if lead["match_reason"] != why:
+                    self.db.update_lead(lead["id"], match_reason=why)
+                    self.db.log(self.name, "awaiting_portfolio", lead["id"], why)
+                return "awaiting_portfolio"
             self.db.update_lead(lead["id"], status="discarded", match_reason=why, sender_id=member_id)
             self.db.log(self.name, "unmatched", lead["id"], why)
             return "unmatched"
@@ -81,7 +94,10 @@ class MatchingAgent:
         return "matched"
 
     def run(self, limit: int = 100) -> dict:
-        counts = {"matched": 0, "unmatched": 0}
+        counts = {"matched": 0, "unmatched": 0, "awaiting_portfolio": 0}
         for lead in self.db.leads_by_status("qualified", limit=limit):
             counts[self.match_one(lead)] += 1
+        if counts["awaiting_portfolio"]:
+            log.warning("%d qualified leads are waiting for portfolio confirmation: %s", counts["awaiting_portfolio"],
+                        ", ".join(p["domain"] for p in self.cfg.unconfirmed_projects))
         return counts

@@ -1,9 +1,12 @@
-"""LangGraph orchestration of the six agents.
+"""LangGraph orchestration of the agents.
 
-    research -> enrich -> qualify -> match -> write --(--send)--> send -> END
-                                                    \\--(default)--> END   (then `review`, then `send`)
+Lead-generation-only mode (default, `sending.enabled: false`):
 
-With human approval ON (default) the send node only sends drafts already approved.
+    research -> enrich -> qualify -> match -> write -> END      (drafts wait for human review)
+
+The send node is not even added to the graph unless `sending.enabled: true`; then
+`run --send` adds  write -> send -> END, and with human approval ON the send node
+only sends drafts already approved.
 
 Each node works on the leads in SQLite whose status it owns, so runs are
 resumable: if a run stops halfway, the next run carries on from the DB state.
@@ -28,7 +31,8 @@ from app.tools.http import PoliteFetcher
 from app.tools.search import SearchClient
 
 log = logging.getLogger("graph")
-STAGES = ["research", "enrich", "qualify", "match", "write", "send"]
+STAGES = ["research", "enrich", "qualify", "match", "write"]   # default run: lead generation only
+SEND_STAGE = "send"
 
 
 class PipelineState(TypedDict, total=False):
@@ -97,21 +101,24 @@ def _node(name: str, fn: Callable[[PipelineState], dict]) -> Callable[[PipelineS
 
 def build_nodes(a: Agents) -> dict[str, Callable]:
     limit = lambda s: int(s.get("max_leads") or 50)  # noqa: E731
-    return {
+    nodes = {
         "research": _node("research", lambda s: a.research().run(s.get("max_leads"))),
         "enrich": _node("enrich", lambda s: a.enrichment().run(limit(s) * 2)),
         "qualify": _node("qualify", lambda s: a.qualification().run(limit(s) * 2)),
         "match": _node("match", lambda s: a.matching().run(limit(s) * 2)),
         "write": _node("write", lambda s: a.email().run(limit(s) * 2)),
-        "send": _node("send", lambda s: a.sender().run(ignore_window=bool(s.get("ignore_window")))),
     }
+    if a.cfg.sending_enabled:  # lead-generation-only mode: no send node at all
+        nodes[SEND_STAGE] = _node(SEND_STAGE, lambda s: a.sender().run(ignore_window=bool(s.get("ignore_window"))))
+    return nodes
 
 
 def should_send(cfg: Config) -> Callable[[PipelineState], str]:
     """Send only when asked (--send). With human approval on, the Sender Agent
     only picks up drafts a human already approved; new drafts wait for `review`."""
     def route(state: PipelineState) -> str:
-        return "send" if state.get("send") and "send" in state.get("stages", STAGES) else "end"
+        wanted = state.get("send") and SEND_STAGE in state.get("stages", STAGES)
+        return SEND_STAGE if wanted and cfg.sending_enabled else "end"
     return route
 
 
@@ -127,8 +134,11 @@ def build_graph(cfg: Config, a: Agents):
     g.add_edge("enrich", "qualify")
     g.add_edge("qualify", "match")
     g.add_edge("match", "write")
-    g.add_conditional_edges("write", should_send(cfg), {"send": "send", "end": END})
-    g.add_edge("send", END)
+    if SEND_STAGE in nodes:
+        g.add_conditional_edges("write", should_send(cfg), {SEND_STAGE: SEND_STAGE, "end": END})
+        g.add_edge(SEND_STAGE, END)
+    else:
+        g.add_edge("write", END)
     return g.compile()
 
 
@@ -146,7 +156,11 @@ def run_pipeline(cfg: Config, db: DB, stages: list[str] | None = None, max_leads
 
 def _run_pipeline(cfg: Config, db: DB, stages, max_leads, send, ignore_window, as_member) -> dict:
     a = Agents(cfg, db, as_member)
-    state: PipelineState = {"stages": stages or STAGES, "max_leads": max_leads or 0, "send": send,
+    if send and not cfg.sending_enabled:
+        log.warning("--send ignored: sending is disabled (lead-generation-only mode). Drafts wait for review.")
+        send = False
+    stages = stages or (STAGES + [SEND_STAGE] if send else STAGES)
+    state: PipelineState = {"stages": stages, "max_leads": max_leads or 0, "send": send,
                             "ignore_window": ignore_window, "as_member": as_member, "results": {}}
     try:
         try:
@@ -159,9 +173,9 @@ def _run_pipeline(cfg: Config, db: DB, stages, max_leads, send, ignore_window, a
         else:
             nodes = build_nodes(a)
             for name in STAGES:
-                if name == "send" and should_send(cfg)(state) == "end":
-                    break
                 state.update(nodes[name](state))
+            if should_send(cfg)(state) == SEND_STAGE:
+                state.update(nodes[SEND_STAGE](state))
             final = state
         return final.get("results", {})
     finally:

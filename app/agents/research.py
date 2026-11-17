@@ -8,13 +8,23 @@ Sources
   * Directory pages you configure (settings.yaml > research.directory_pages),
     crawled via the robots-respecting fetcher.
   * Optional Google Programmable Search (free tier).
+
+Lead quality gate (a result becomes a lead only if it looks like ONE company's OWN site):
+  * skip_domains / skip_tlds (directories, aggregators, wedding/event sites, page builders)
+  * listicle / directory titles anywhere in the title ("Top 10 ...", "near me", "Phone Numbers")
+  * listing URL paths (/category/, /directory/, /best-x-in-city, -near-me ...)
+  * the business-name part of the title must not be a category ("Dental Clinics in Puri",
+    "Best Jewellers in Bhilwara", "Wedding Planners in Cuttack"); an SEO tagline after a real
+    name is fine ("Sai Dental Care | Best Dental Clinic in Puri")
+  * directory listings are kept only if the company's own website is found, and its domain
+    must contain the company's name
 """
 from __future__ import annotations
 
 import logging
 import random
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -31,6 +41,20 @@ DIRECTORY_HOSTS = ("justdial.com", "indiamart.com", "tradeindia.com", "sulekha.c
 LISTING_TITLE = re.compile(
     r"^(top|best|find|search|explore|browse|\d+\s)\b|near me|list of|directory|\b\d+\+? best\b|"
     r"\bbest \w+(?: \w+)? in\b|\b(listings?|marketplace|compare)\b", re.I)
+# A page about MANY businesses, wherever it appears in the title (taglines included).
+LISTICLE_TITLE = re.compile(
+    r"\b(?:top|best)\s+\d+\b|\b\d+\+?\s+(?:best|top|popular|famous|leading|trusted)\b|\bnear me\b|\blist of\b|"
+    r"\b(?:directory|directories|yellow ?pages|classifieds|listings)\b|"
+    r"\b(?:phone numbers?|contact numbers?|reviews? (?:&|and) ratings?|ratings? (?:&|and) reviews?)\b", re.I)
+LISTING_PATH = re.compile(
+    r"/(?:category|categories|directory|directories|listing|listings|search|tag|tags|vendors?|city|cities|"
+    r"near-me|compare)(?:/|$)|(?:^|[/-])(?:top|best)-\d+-|(?:^|/)(?:top|best)-[\w-]+-in-[\w-]+|-near-me\b", re.I)
+# Brand names typical of guides/directories ("Dental Clinics in Puri - LocalGuide").
+DIRECTORY_BRAND = re.compile(r"guide|director(?:y|ies)|listing|finder|portal|yellow ?pages?|near ?me|reviews|ratings|"
+                             r"compare|vendors", re.I)
+# Title segments that are page names, not business names ("Contact Us | ABC Traders").
+NOISE_SEGMENT = re.compile(r"^(?:home(?: ?page)?|welcome|official(?: web ?site| site)?|index|main|contact(?: us)?|"
+                           r"about(?: us)?|services|products|gallery|blog)$", re.I)
 GOVT_NAME = re.compile(r"^(govt\.?|government|district|state|municipal|public)\b", re.I)
 # Words that, on their own, describe a category rather than name a business.
 GENERIC_WORDS = {
@@ -43,8 +67,15 @@ GENERIC_WORDS = {
     "travel", "travels", "tours", "builders", "developers", "real", "estate", "interior", "interiors",
     "designers", "furniture", "jewellers", "showroom", "showrooms", "consultants", "ca", "firm", "firms",
     "logistics", "transport", "packers", "movers", "event", "events", "management", "company", "companies",
+    # wedding / event directories
+    "wedding", "weddings", "venue", "venues", "planner", "planners", "photographer", "photographers",
+    "photography", "decorator", "decorators", "decoration", "caterer", "caterers", "banquet", "banquets",
+    "hall", "halls", "makeup", "artist", "artists", "mehendi", "bridal", "marriage", "vendor", "vendors",
+    "lawn", "lawns", "florist", "florists",
+    # listicle filler
+    "affordable", "cheap", "famous", "popular", "leading", "trusted", "verified", "local", "nearby", "list",
+    "updated", "reviews", "ratings", "numbers", "address", "price", "prices", "cost",
 }
-TITLE_NOISE = re.compile(r"\s*[|\-–—:]\s*(home|official( website)?|welcome).*$", re.I)
 
 
 class ResearchAgent:
@@ -60,6 +91,16 @@ class ResearchAgent:
         self.keep_unresolved = bool(r.get("keep_listings_without_website", False))
         self.skip_domains = cfg.settings.get("skip_domains", []) + [p["domain"] for p in cfg.portfolio]
         self.skip_tlds = cfg.settings.get("skip_tlds", [])
+        excl = cfg.icp.get("query_exclude_sites") or []
+        self.exclude = " ".join(f"-site:{d}" for d in excl)
+        icp = cfg.icp
+        self._places = {w for group in icp["cities"].values() for c in group for w in re.findall(r"[a-z]+", c.lower())}
+        self._places |= {w for group in icp.get("states", {}).values() for c in group for w in re.findall(r"[a-z]+", c.lower())}
+        vocab = set(GENERIC_WORDS)
+        for spec in icp.get("industries", {}).values():
+            vocab |= {w for k in spec["keywords"] for w in re.findall(r"[a-z]+", k.lower())}
+        vocab |= {w for k in icp.get("query_industries", []) for w in re.findall(r"[a-z]+", k.lower())}
+        self._generic = vocab | {w + "s" for w in vocab} | {w + "es" for w in vocab}
 
     # ------------------------------------------------------------ queries
     def build_queries(self) -> list[str]:
@@ -79,23 +120,58 @@ class ResearchAgent:
         return queries
 
     # ------------------------------------------------------------ helpers
-    def _company_from_title(self, title: str) -> str:
-        t = TITLE_NOISE.sub("", title or "").strip()
-        for sep in (" | ", " - ", " – ", " — ", ": "):
-            if sep in t:
-                t = t.split(sep)[0].strip()
-        return t[:120]
+    def _q(self, query: str) -> str:
+        """Query as sent to the search engine: directories excluded unless the query targets a site."""
+        return query if "site:" in query or not self.exclude else f"{query} {self.exclude}"
+
+    @staticmethod
+    def _segments(title: str) -> list[str]:
+        parts = re.split(r"\s+[|\-–—:»]\s+|\s*\|\s*", title or "")
+        return [p.strip(" .,") for p in parts if p.strip(" .,") and not NOISE_SEGMENT.match(p.strip(" .,"))]
+
+    def _is_category(self, name: str) -> bool:
+        """'Dental Clinics in Puri', 'Wedding Planners Cuttack': a category, not a business.
+        A name that STARTS with a place word is a business ('Sagar Electronics', 'Anand Traders',
+        'Cuttack Diagnostic Centre'): categories put the place last."""
+        words = [w for w in re.findall(r"[a-z]+", name.lower()) if w not in {"pvt", "ltd", "private", "limited"}]
+        if words and words[0] in self._places and words[0] not in self._generic:
+            return False
+        return not words or all(w in self._generic or w in self._places for w in words)
+
+    def _name_in_domain(self, name: str, url: str) -> bool:
+        """True if the site's domain carries the business name (its own website, not a listing)."""
+        label = registered_domain(url).split(".")[0].replace("-", "")
+        words = [w for w in re.findall(r"[a-z]+", name.lower())
+                 if len(w) >= 3 and w not in self._generic and w not in self._places and w not in {"pvt", "ltd"}]
+        compact = re.sub(r"[^a-z]", "", name.lower())
+        return bool(label) and (any(w in label for w in words) or (len(compact) >= 4 and compact in label))
+
+    @staticmethod
+    def listing_reason(title: str, url: str) -> str | None:
+        """Why a search result is a list/category page (None = could be one company's own site)."""
+        if LISTICLE_TITLE.search(title or ""):
+            return "listicle/directory title"
+        if LISTING_PATH.search(urlparse(url if "://" in url else "https://" + url).path or ""):
+            return "listing URL"
+        return None
+
+    def _site_name(self, title: str, url: str) -> str | None:
+        """Business name from a search-result title, or None if the title names a category.
+        A tagline first ('Best X in City | ABC') is accepted only if ABC is in the domain."""
+        for i, seg in enumerate(self._segments(title)):
+            if LISTING_TITLE.search(seg) or GOVT_NAME.search(seg) or self._is_category(seg):
+                continue
+            if i > 0 and (DIRECTORY_BRAND.search(seg) or not self._name_in_domain(seg, url)):
+                return None  # category headline + a guide's brand, or a name that isn't their own domain
+            return seg[:120]
+        return None
 
     def _directory_name(self, title: str) -> str | None:
         """'ABC Interiors in Saheed Nagar, Bhubaneswar - Justdial' -> 'ABC Interiors'."""
-        if LISTING_TITLE.search(title or ""):
+        if LISTING_TITLE.search(title or "") or LISTICLE_TITLE.search(title or ""):
             return None
         t = re.split(r"\s+(?:in|at)\s+[A-Z]|\s+[-|–]\s+|,\s", title)[0].strip()
-        if not 2 < len(t) < 80 or GOVT_NAME.search(t):
-            return None
-        words = [w for w in re.findall(r"[a-z]+", t.lower()) if w not in {"pvt", "ltd", "private", "limited"}]
-        cities = {c.lower() for group in self.cfg.icp["cities"].values() for c in group}
-        if not words or all(w in GENERIC_WORDS or w in cities for w in words):
+        if not 2 < len(t) < 80 or GOVT_NAME.search(t) or self._is_category(t):
             return None  # "Diagnostic Centres", "Clinics Rourkela": a category, not a business
         return t
 
@@ -117,13 +193,13 @@ class ResearchAgent:
         return bool(lead_id)
 
     def _resolve_website(self, name: str, city: str | None) -> str | None:
+        """The listing's own website: its domain must carry the company's name."""
         q = f"\"{name}\" {city or ''} official website".strip()
-        for r in self.search.search(q, 5):
-            if r["url"] and not is_skipped(r["url"], self.skip_domains, self.skip_tlds):
-                words = [w for w in re.findall(r"[a-z]{3,}", name.lower()) if w not in {"pvt", "ltd", "the", "and"}]
-                dom = registered_domain(r["url"])
-                if any(w in dom for w in words) or any(w in r["title"].lower() for w in words[:2]):
-                    return r["url"]
+        for r in self.search.search(self._q(q), 5):
+            url = r["url"]
+            if (url and not is_skipped(url, self.skip_domains, self.skip_tlds)
+                    and not self.listing_reason(r["title"], url) and self._name_in_domain(name, url)):
+                return url
         return None
 
     # ---------------------------------------------------------------- run
@@ -137,7 +213,7 @@ class ResearchAgent:
             if added >= budget or out_of_time():
                 break
             try:
-                results = self.search.search(q, self.per_query)
+                results = self.search.search(self._q(q), self.per_query)
             except SearchRateLimited as e:
                 log.warning("Search rate limit hit, stopping research for this run: %s", e)
                 break
@@ -161,9 +237,11 @@ class ResearchAgent:
                         continue  # no website of its own -> no email to find; don't spend the lead budget
                     added += self._add(name, site, f"directory:{registered_domain(r['url'])}", r["url"], q, r["snippet"])
                 else:
-                    if LISTING_TITLE.search(r["title"] or ""):
-                        continue  # "Best jewellers in X", "Find your next shop...": a list page, not a business
-                    added += self._add(self._company_from_title(r["title"]), r["url"], r["engine"], r["url"], q, r["snippet"])
+                    name = None if self.listing_reason(r["title"], r["url"]) else self._site_name(r["title"], r["url"])
+                    if not name:
+                        log.debug("skip (listing/category): %s %s", r["title"], r["url"])
+                        continue  # "Best jewellers in X", "Top 10 ...", /category/...: a list page, not a business
+                    added += self._add(name, r["url"], r["engine"], r["url"], q, r["snippet"])
         return added
 
     def run_directories(self, budget: int) -> int:

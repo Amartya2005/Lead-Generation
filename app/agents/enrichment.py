@@ -9,8 +9,8 @@ import logging
 
 from app.config import Config
 from app.db import DB
-from app.tools.domains import registered_domain
-from app.tools.extract import extract, merge
+from app.tools.domains import is_skipped, registered_domain
+from app.tools.extract import extract, merge, site_problem
 from app.tools.geo import Geo
 from app.tools.http import FetchError, PoliteFetcher, RobotsDisallowed
 
@@ -29,6 +29,15 @@ class EnrichmentAgent:
     def __init__(self, cfg: Config, db: DB, fetcher: PoliteFetcher, geo: Geo):
         self.cfg, self.db, self.fetcher, self.geo = cfg, db, fetcher, geo
         self.max_pages = int(cfg.settings["crawl"].get("max_pages_per_site", 3))
+        self.skip_domains = cfg.settings.get("skip_domains", [])
+        self.skip_tlds = cfg.settings.get("skip_tlds", [])
+
+    def _reject_site(self, lead_id: int, final_url: str, why: str) -> str:
+        """Not a working company website: discard with the reason (shown in review and `show`)."""
+        self.db.update_lead(lead_id, status="discarded", website=final_url, error=why[:300],
+                            reasons=[f"not a real company website: {why}"])
+        self.db.log(self.name, "not_company_site", lead_id, why[:300])
+        return "not_company_site"
 
     def _fetch_home(self, website: str):
         """Try the URL as given, then the https/http alternative."""
@@ -59,8 +68,13 @@ class EnrichmentAgent:
             self.db.log(self.name, "unreachable", lead_id, str(e)[:300])
             return "unreachable"
 
+        if is_skipped(home.final_url, self.skip_domains, self.skip_tlds):
+            return self._reject_site(lead_id, home.final_url, f"redirects to {registered_domain(home.final_url)}")
         pages = [extract(home.html, home.final_url, domain)]
         pages[0]["rendered"] = home.rendered
+        why = site_problem(pages[0])
+        if why:
+            return self._reject_site(lead_id, home.final_url, why)
         for kind in ("contact", "about", "careers"):
             if len(pages) >= self.max_pages:
                 break

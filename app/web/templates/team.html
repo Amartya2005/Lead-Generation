@@ -8,6 +8,7 @@
   <span class="small muted" style="flex:1 1 240px">Test the database, Gmail (sending + inbox) and Gemini with the current settings. Nothing is sent.</span>
   <button type="submit">Check connections</button>
 </form>
+{% if sending_enabled %}
 <form method="post" action="{{ url_for('admin_test_email') }}" class="card inline">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <span class="small muted" style="flex:1 1 240px">Send one sample email through Gmail right now, to your own address.
@@ -15,6 +16,7 @@
   <input type="text" name="to" placeholder="you@example.com" aria-label="Send test to" required>
   <button class="primary" type="submit">Send test email</button>
 </form>
+{% endif %}
 {% endif %}
 <div class="card scroll">
   <p class="small muted">{{ company.legal_name }} · {{ company.website }} · assignment: {{ team.get('assignment', 'default') }}</p>
@@ -37,7 +39,8 @@
     {% for p in portfolio %}
     <tr><td>{{ p.domain }}<div class="small muted">{{ p.kind }}{% if p.owner %} · only {{ member_name(p.owner) }}{% endif %}</div></td>
       <td>{{ p.description }}</td>
-      <td>{% if p.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed</span>{% endif %}</td></tr>
+      <td>{% if p.confirmed %}<span class="chip good">confirmed</span>{% else %}<span class="chip bad">not confirmed: not used</span>
+        {% for d in p.description_problems %}<div class="small muted">{{ d }}</div>{% endfor %}{% endif %}</td></tr>
     {% endfor %}
   </table>
   {% if on_vercel %}

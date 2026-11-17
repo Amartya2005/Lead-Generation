@@ -22,7 +22,8 @@ Vercel has no long-running processes or persistent disk, so the design differs f
   or `select * from cron.job_run_details order by start_time desc limit 5;`. The GitHub Actions
   workflow is a spare clock; extra calls are harmless. `/api/tick` does at most about 4 minutes of work per call. The database enforces
   spacing between ticks (4 minutes) and the random 90–300 s gap between emails, so extra calls change nothing.
-* **Sending:** at most one email per tick. Each lead is atomically claimed (`sending`) before the
+* **Sending:** skipped entirely while `sending.enabled` is false in `config/settings.yaml`
+  (lead-generation-only mode, the current default); inbox sync is skipped too. When enabled: at most one email per tick. Each lead is atomically claimed (`sending`) before the
   mail server is contacted, so it can never be sent twice. A send interrupted half-way is marked
   `failed` and never retried automatically.
 * **No Playwright** on Vercel (too large). JavaScript-only sites are read without rendering.

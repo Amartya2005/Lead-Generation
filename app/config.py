@@ -19,6 +19,22 @@ import yaml
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+MAX_PROJECT_DESCRIPTION = 120
+
+
+def description_problems(desc: str) -> list[str]:
+    """A portfolio description is pasted into emails verbatim, so it must be short and claim-free."""
+    from app.tools.email_rules import FORBIDDEN
+
+    problems = []
+    if len(desc) > MAX_PROJECT_DESCRIPTION:
+        problems.append(f"description is {len(desc)} characters (max {MAX_PROJECT_DESCRIPTION})")
+    if re.search(r"\d", desc):
+        problems.append("description contains a number")
+    for pattern, label in FORBIDDEN:
+        if re.search(pattern, desc, re.I):
+            problems.append(f"description has a {label}")
+    return problems
 
 
 def _config_dirs() -> tuple[Path, Path | None]:
@@ -78,6 +94,10 @@ class Config:
             s["sending"]["daily_limit"] = int(self.env("DAILY_SEND_LIMIT"))
         s["sending"]["human_approval"] = _bool(os.getenv("HUMAN_APPROVAL"), s["sending"].get("human_approval", True))
         s["sending"]["dry_run"] = _bool(os.getenv("DRY_RUN"), s["sending"].get("dry_run", False))
+        # Master switch, YAML only (no env override): lead-generation-only mode unless explicitly true.
+        s["sending"]["enabled"] = s["sending"].get("enabled", False) is True
+        if not s["sending"]["enabled"]:
+            s["sending"]["dry_run"] = True
         if self.env("DEFAULT_SENDER"):
             self.team["default_member"] = self.env("DEFAULT_SENDER")
 
@@ -88,10 +108,13 @@ class Config:
             for key in ("id", "domain", "url", "description", "capabilities"):
                 if not p.get(key):
                     raise ValueError(f"portfolio project {p.get('id', '?')} is missing '{key}'")
-            p.setdefault("confirmed", False)
             p.setdefault("kind", "client")
             p.setdefault("industries", [])
             p.setdefault("owner", None)  # personal portfolio: only its owner may cite it
+            p["description"] = " ".join(str(p["description"]).split())
+            # Only an explicit `confirmed: true` counts, and only with a short, claim-free description.
+            p["description_problems"] = description_problems(p["description"])
+            p["confirmed"] = p.get("confirmed") is True and not p["description_problems"]
 
     def _validate_team(self) -> None:
         c = self.team.setdefault("company", {})
@@ -128,6 +151,14 @@ class Config:
 
     def project(self, project_id: str) -> dict | None:
         return next((p for p in self.portfolio if p["id"] == project_id), None)
+
+    @property
+    def sending_enabled(self) -> bool:
+        return self.settings["sending"]["enabled"]
+
+    @property
+    def unconfirmed_projects(self) -> list[dict]:
+        return [p for p in self.portfolio if not p["confirmed"]]
 
     # ----------------------------------------------------------------- team
     @property

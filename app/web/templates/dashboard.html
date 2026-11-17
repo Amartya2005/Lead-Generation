@@ -6,14 +6,21 @@
 {% if warnings %}<div class="card"><ul class="warn">{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></div>{% endif %}
 
 <div class="grid" style="margin-bottom:14px">
-  <a class="stat" href="{{ url_for('leads', status='drafted', who='mine') }}"><b>{{ mine }}</b><span>your drafts to review</span></a>
-  <a class="stat" href="{{ url_for('leads', status='drafted', who='all') }}"><b>{{ counts.get('drafted', 0) }}</b><span>all drafts</span></a>
-  <a class="stat" href="{{ url_for('leads', status='approved', who='all') }}"><b>{{ counts.get('approved', 0) }}</b><span>approved, waiting to send</span></a>
+  <a class="stat" href="{{ url_for('leads', status='drafted', who='mine') }}"><b>{{ mine }}</b><span>ready for review (yours)</span></a>
+  <a class="stat" href="{{ url_for('leads', status='drafted', who='all') }}"><b>{{ counts.get('drafted', 0) }}</b><span>ready for review (all)</span></a>
+  <a class="stat" href="{{ url_for('leads', status='approved', who='all') }}"><b>{{ counts.get('approved', 0) }}</b><span>{{ 'approved, waiting to send' if sending_enabled else 'approved (reviewed)' }}</span></a>
   <a class="stat" href="{{ url_for('leads', status='sent', who='all') }}"><b>{{ counts.get('sent', 0) }}</b><span>sent</span></a>
   <a class="stat" href="{{ url_for('leads', status='replied', who='all') }}"><b>{{ counts.get('replied', 0) }}</b><span>replied</span></a>
   <a class="stat" href="{{ url_for('leads', status='needs_contact', who='all') }}"><b>{{ counts.get('needs_contact', 0) }}</b><span>good fit, no email found</span></a>
 </div>
 
+{% if not sending_enabled %}
+<div class="card">
+  <h2>Sending</h2>
+  <p class="small"><span class="chip bad">disabled</span> Lead-generation-only mode: no email is sent. Leads are found,
+    qualified and drafted for human review only (<code>sending.enabled: false</code> in config/settings.yaml).</p>
+</div>
+{% else %}
 <div class="card">
   <h2>Sending</h2>
   <p class="small muted">Send window: {{ window.get('start_hour', 0) }}:00–{{ window.get('end_hour', 24) }}:00 {{ window.get('timezone', '') }},
@@ -28,6 +35,7 @@
     {% endfor %}
   </table></div>
 </div>
+{% endif %}
 
 <div class="card small">
   <h2>Activity</h2>
