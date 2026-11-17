@@ -254,6 +254,10 @@ def test_per_source_stats_daily_and_weekly(ccfg, db, capsys, monkeypatch):
     from rich.console import Console
 
     monkeypatch.setattr(main, "console", Console(width=220))  # no truncation in captured output
+    from tests.conftest import PG_URL
+
+    if PG_URL:  # the CLI opens its own connection: point it at the test database
+        monkeypatch.setenv("DATABASE_URL", PG_URL)
     main.main(["stats"])
     out = capsys.readouterr().out
     assert "duckduckgo" in out and "listing" in out and "New leads per day" in out
