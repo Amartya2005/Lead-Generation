@@ -330,6 +330,12 @@ class DB:
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                      (key, value, now()))
 
+    def kv_incr(self, key: str, n: int = 1) -> None:
+        """Atomic counter (analytics); works on SQLite and Postgres."""
+        self.execute("INSERT INTO kv(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                     "value=CAST(CAST(kv.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT), "
+                     "updated_at=excluded.updated_at", (key, str(int(n)), now()))
+
     # ---------------------------------------------------------------- leads
     def find_lead(self, domain: str | None = None, company: str | None = None, city: str | None = None):
         if domain:

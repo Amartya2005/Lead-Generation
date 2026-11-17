@@ -27,18 +27,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from app.config import Config
 from app.db import DB, AlreadyRunning
 
 log = logging.getLogger("tick")
-
-
-def _ist_day_start(cfg: Config) -> str:
-    tz = ZoneInfo(cfg.settings["sending"].get("send_window", {}).get("timezone", "Asia/Kolkata"))
-    start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 def _due(db: DB, key: str, every_seconds: int) -> bool:
@@ -99,8 +92,11 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
             out["inbox"] = {"error": type(e).__name__}
         _stamp(db, "inbox_last")
 
-    if _due(db, "cache_pruned", 86400):
+    if _due(db, "cache_pruned", 86400):  # keep the database bounded: page cache and old analytics
+        from app.tools import stats
+
         db.prune_cache(float(cfg.settings["crawl"].get("cache_hours", 72)))
+        stats.prune(cfg, db, int(cfg.settings["storage"].get("stats_keep_days", 90)))
         _stamp(db, "cache_pruned")
 
     # 3) pipeline: drain the backlog while discovering (no daily ceiling; per-tick budgets only).

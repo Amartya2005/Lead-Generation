@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 
 from app.config import Config
 from app.db import DB, loads
-from app.tools import backoff
+from app.tools import backoff, stats
 from app.tools.domains import host, is_skipped, normalize_url, registered_domain
 from app.tools.geo import Geo
 from app.tools.http import FetchError, PoliteFetcher, RobotsDisallowed
@@ -206,14 +206,22 @@ class ResearchAgent:
             return None  # "Diagnostic Centres", "Clinics Rourkela": a category, not a business
         return t
 
+    def _note(self, source: str | None, outcome: str) -> str:
+        """Count a discovery outcome for per-source analytics (python main.py stats)."""
+        stats.record(self.cfg, self.db, source, outcome)
+        return outcome
+
     def _add(self, company: str, url: str | None, source: str, source_url: str, query: str, snippet: str,
-             city_hint: str | None = None) -> bool:
+             city_hint: str | None = None) -> str:
+        """-> 'added' | 'duplicate' | 'rejected:skip_domain' | 'rejected:suppressed'"""
         city_hint = city_hint or self.geo.city_from_query(query) or self.geo.city_from_query(snippet)
         if url:
             url = normalize_url(url)
             dom = registered_domain(url)
-            if is_skipped(url, self.skip_domains, self.skip_tlds) or self.db.is_suppressed(None, dom):
-                return False
+            if is_skipped(url, self.skip_domains, self.skip_tlds):
+                return "rejected:skip_domain"
+            if self.db.is_suppressed(None, dom):
+                return "rejected:suppressed"
             lead_id = self.db.add_lead(company=company or dom, website=url, domain=dom, source=source,
                                        source_url=source_url, query=query, snippet=snippet[:500], city_hint=city_hint)
             if not lead_id:
@@ -226,7 +234,7 @@ class ResearchAgent:
                                        city_hint=city_hint, status="no_website")
         if lead_id:
             self.db.log(self.name, "discovered", lead_id, {"source": source, "query": query, "url": url})
-        return bool(lead_id)
+        return "added" if lead_id else "duplicate"
 
     # ------------------------------------------------------ cross-source identity
     @staticmethod
@@ -277,8 +285,7 @@ class ResearchAgent:
         if existing:
             self._seen_again(existing, c.source, c.source_url, c.evidence)
             return "seen_again"
-        added = self._add(name, url, c.source, c.source_url, c.query, c.evidence, city_hint=c.city_hint)
-        return "added" if added else "rejected:url"
+        return self._add(name, url, c.source, c.source_url, c.query, c.evidence, city_hint=c.city_hint)
 
     def run_sources(self, budget: int | None = None, deadline: float | None = None, only: str | None = None) -> dict:
         """Run the enabled source adapters (config: research.adapters). Disabled ones are skipped."""
@@ -298,7 +305,7 @@ class ResearchAgent:
             for cand in adapter.discover(deadline):
                 if budget <= 0 or (deadline is not None and time.monotonic() > deadline):
                     break
-                outcome = self.ingest(cand, lookups)
+                outcome = self._note(cand.source, self.ingest(cand, lookups))
                 counts[outcome.split(":")[0]] += 1
                 budget -= outcome == "added"
             adapter.spend_resolutions(start - lookups["resolutions"])
@@ -350,8 +357,10 @@ class ResearchAgent:
                     break
                 h = host(r["url"])
                 if any(h.endswith(d) for d in DIRECTORY_HOSTS):
+                    src = f"directory:{registered_domain(r['url'])}"
                     name = self._directory_name(r["title"])
                     if not name:
+                        self._note(src, "rejected:listing")
                         continue
                     site = None
                     if self.resolve_dirs and not out_of_time():
@@ -361,14 +370,16 @@ class ResearchAgent:
                             self._rate_limited(e)
                             break
                     if not site and not self.keep_unresolved:
+                        self._note(src, "unresolved")
                         continue  # no website of its own -> no email to find; don't spend the lead budget
-                    added += self._add(name, site, f"directory:{registered_domain(r['url'])}", r["url"], q, r["snippet"])
+                    added += self._note(src, self._add(name, site, src, r["url"], q, r["snippet"])) == "added"
                 else:
                     name = None if self.listing_reason(r["title"], r["url"]) else self._site_name(r["title"], r["url"])
                     if not name:
                         log.debug("skip (listing/category): %s %s", r["title"], r["url"])
+                        self._note(r["engine"], "rejected:listing")
                         continue  # "Best jewellers in X", "Top 10 ...", /category/...: a list page, not a business
-                    added += self._add(name, r["url"], r["engine"], r["url"], q, r["snippet"])
+                    added += self._note(r["engine"], self._add(name, r["url"], r["engine"], r["url"], q, r["snippet"])) == "added"
         return added
 
     def run_directories(self, budget: int) -> int:
@@ -388,7 +399,7 @@ class ResearchAgent:
                 if not url.startswith("http") or registered_domain(url) == own:
                     continue
                 name = " ".join(a.get_text(" ").split()) or registered_domain(url)
-                added += self._add(name[:120], url, "directory_page", page_url, page_url, "")
+                added += self._note("directory_page", self._add(name[:120], url, "directory_page", page_url, page_url, "")) == "added"
                 if added >= budget:
                     break
         return added

@@ -147,6 +147,7 @@ storage:
   log_file: logs/run.log
   backup_dir: data/backups
   backup_keep_days: 14
+  stats_keep_days: 90         # per-source discovery counters (python main.py stats)
   google_sheets:
     enabled: false
     spreadsheet: "Lead Outreach"
