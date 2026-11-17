@@ -1,0 +1,18 @@
+{
+  "version": 0.6,
+  "generator": "synthetic test fixture (shape of an Overpass API JSON response)",
+  "osm3s": {"copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."},
+  "elements": [
+    {"type": "node", "id": 1001, "tags": {"name": "Kalinga Steel Fabricators", "office": "company",
+     "website": "https://www.kalingasteelfab.in/", "addr:street": "Rasulgarh", "addr:city": "Bhubaneswar", "addr:postcode": "751010"}},
+    {"type": "way", "id": 1002, "center": {"lat": 20.29, "lon": 85.82}, "tags": {"name": "Utkal Dental Care", "amenity": "dentist",
+     "contact:website": "utkaldentalcare.com"}},
+    {"type": "node", "id": 1003, "tags": {"name": "No Website Traders", "shop": "hardware"}},
+    {"type": "node", "id": 1004, "tags": {"shop": "furniture", "website": "https://nameless.example.in/"}},
+    {"type": "node", "id": 1005, "tags": {"name": "Sai Furniture", "shop": "furniture",
+     "website": "https://www.justdial.com/Bhubaneswar/Sai-Furniture"}},
+    {"type": "node", "id": 1006, "tags": {"name": "Dental Clinics", "amenity": "clinic", "website": "https://clinics.example.in/"}},
+    {"type": "node", "id": 1007, "tags": {"name": "Odisha Rice Mills Pvt Ltd", "craft": "miller",
+     "website": "http://odisharicemills.co.in; https://facebook.com/orm"}}
+  ]
+}

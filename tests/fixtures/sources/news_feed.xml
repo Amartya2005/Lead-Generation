@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic test feed: invented companies, shaped like a WordPress RSS 2.0 feed. -->
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel>
+  <title>Example Startup News</title>
+  <link>https://news.example.in/</link>
+  <item>
+    <title>Bhubaneswar-based agritech startup Krishimitra raises Rs 5 Cr in seed round</title>
+    <link>https://news.example.in/2026/11/krishimitra-seed/</link>
+    <pubDate>Tue, 17 Nov 2026 06:30:00 +0000</pubDate>
+    <description><![CDATA[<p>Krishimitra, founded in Bhubaneswar, Odisha, connects farmers with buyers.
+      Visit <a href="https://www.krishimitra.in/">krishimitra.in</a>. Also covered by
+      <a href="https://news.example.in/tag/agritech/">our agritech desk</a>.</p>]]></description>
+  </item>
+  <item>
+    <title>How Odicraft built a handloom export business from Cuttack</title>
+    <link>https://news.example.in/2026/11/odicraft/</link>
+    <pubDate>Tue, 17 Nov 2026 05:00:00 +0000</pubDate>
+    <description><![CDATA[<p>The Cuttack company sells Sambalpuri textiles to retailers.</p>]]></description>
+  </item>
+  <item>
+    <title>Robotics startup Acmebots raises $10 Mn</title>
+    <link>https://news.example.in/2026/11/acmebots/</link>
+    <pubDate>Tue, 17 Nov 2026 04:00:00 +0000</pubDate>
+    <description><![CDATA[<p>The California company plans to expand in the USA.</p>]]></description>
+  </item>
+  <item>
+    <title>Govt opens applications for new MSME scheme</title>
+    <link>https://news.example.in/2026/11/msme-scheme/</link>
+    <description><![CDATA[<p>The Centre announced a scheme.</p>]]></description>
+  </item>
+  <item>
+    <title>Example Capital closes Rs 500 Cr fund to back early-stage startups</title>
+    <link>https://news.example.in/2026/11/fund/</link>
+    <description><![CDATA[<p>The fund will invest in seed rounds.</p>]]></description>
+  </item>
+  <item>
+    <title>Fintech startup Paylakshmi raises Rs 2 Cr from angels</title>
+    <link>https://news.example.in/2026/11/paylakshmi/</link>
+    <description><![CDATA[<p>Paylakshmi builds billing tools for kirana stores in Rourkela.</p>]]></description>
+  </item>
+</channel>
+</rss>

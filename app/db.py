@@ -488,7 +488,9 @@ class DB:
             "ON CONFLICT(query) DO UPDATE SET source=excluded.source, ran_at=excluded.ran_at, results=excluded.results",
             (query, source, now(), results))
 
-    def queries_since(self, since_iso: str) -> int:
+    def queries_since(self, since_iso: str, source: str | None = None) -> int:
+        if source:
+            return self.scalar("SELECT count(*) FROM queries WHERE ran_at>=? AND source=?", (since_iso, source))
         return self.scalar("SELECT count(*) FROM queries WHERE ran_at>=?", (since_iso,))
 
     # ------------------------------------------------------------ http cache

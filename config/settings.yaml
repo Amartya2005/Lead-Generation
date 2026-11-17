@@ -38,6 +38,45 @@ research:
   # Outbound links on these pages become candidate companies.
   directory_pages: []
   #  - https://example-startup-directory.in/odisha
+  # Extra discovery sources (app/sources/). Each is independent and OFF until you set enabled: true.
+  # Results pass the same quality gate as search results, are deduplicated across sources
+  # (domain, or company name + city) and keep their provenance (source, source_url, evidence).
+  # A repeat sighting by another source is logged as a `seen_again` event on the existing lead.
+  # Check them with `python main.py sources`; run one with `python main.py research --source osm`.
+  # Deferred: X/Twitter (no free, compliant read access), Google Places (billed fields, storage limits).
+  adapters:
+    osm:                               # OpenStreetMap via the public Overpass API: free, no key
+      enabled: false
+      endpoint: https://overpass-api.de/api/interpreter
+      max_requests_per_day: 4          # one ICP city per request; Overpass asks regular apps to stay far below 10k/day
+      max_requests_per_run: 1
+      cache_hours: 168                 # the same city isn't asked again for a week
+      timeout_seconds: 60
+      max_results_per_request: 150
+      # Only businesses that list their own website, in these OSM categories:
+      filters: ['["office"]', '["shop"]', '["craft"]', '["healthcare"]', '["industrial"]',
+                '["amenity"~"^(clinic|dentist|doctors|hospital|school|college|training|driving_school)$"]']
+    news_rss:                          # startup / SME news feeds -> the companies they report on
+      enabled: false
+      min_hours_between_fetches: 12
+      max_items_per_feed: 30
+      max_resolutions_per_day: 5       # website lookups via DuckDuckGo when the item has no company link
+      # A feed is fetched ONLY with terms: permitted. Checked 2026-11-17 (feeds and robots.txt allow access):
+      feeds:
+        - name: inc42
+          url: https://inc42.com/feed/
+          terms: prohibited            # Terms of Use: no bot/automated program may "access, acquire, copy, or
+                                       # monitor" content "without the prior express written consent of Inc42"
+        - name: entrackr
+          url: https://entrackr.com/rss
+          terms: prohibited            # Terms of Use: no "systematic or automated data collection ... without our
+                                       # express written consent"
+        - name: yourstory
+          url: https://yourstory.com/feed
+          terms: unverified            # terms page is behind a bot challenge; read it yourself before permitting
+        - name: yourstory_smbstory
+          url: https://yourstory.com/smbstory/feed
+          terms: unverified
 
 qualification:
   min_score: 6                # leads below this are discarded
@@ -230,4 +269,9 @@ skip_domains:
   - web.app
   - firebaseapp.com
   - square.site
+  # News / map sources: an article or map page is never a lead (the company it names may be)
+  - inc42.com
+  - yourstory.com
+  - entrackr.com
+  - openstreetmap.org
 skip_tlds: [gov.in, nic.in, gov, edu]

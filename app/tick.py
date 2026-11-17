@@ -10,7 +10,8 @@ amount of work and stops before the function time limit:
      `sending.enabled` is false (lead-generation-only mode, the default).
   3. inbox sync, every 2 hours (also skipped in lead-generation-only mode: nothing was sent)
   4. pipeline work: qualify -> match -> draft what's pending, enrich a few sites,
-     carry those through to drafts, then run one research query
+     carry those through to drafts, then run one research query, then the enabled
+     source adapters (research.adapters; each has its own daily limits and back-off)
 
 Ticks never overlap (database lease) and are spaced at least `min_interval_seconds`
 apart, so calling the endpoint more often cannot speed up sending or crawling.
@@ -129,7 +130,7 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
         # One research query per tick, until today's quota is used.
         r = cfg.settings["research"]
         day = _ist_day_start(cfg)
-        queries_today = db.queries_since(day)
+        queries_today = db.queries_since(day, source="search")  # adapters keep their own counts
         new_today = db.scalar("SELECT count(*) FROM leads WHERE created_at>=? AND source<>'manual'", (day,))
         pending = db.scalar("SELECT count(*) FROM leads WHERE status='discovered'")
         if (left() > reserve + 40 and queries_today < int(r.get("queries_per_run", 8))
@@ -139,6 +140,14 @@ def _work(cfg: Config, db: DB, left, t: dict) -> dict:
             if queries:
                 counts["new_leads"] = agent.run_search(int(r.get("max_new_leads_per_run", 30)) - new_today, queries,
                                                        deadline=time.monotonic() + left() - reserve)
+
+        # Extra sources (OSM, news feeds ...): only those enabled in settings.yaml.
+        adapters = r.get("adapters") or {}
+        if (any((v or {}).get("enabled") is True for v in adapters.values()) and left() > reserve + 40
+                and pending < 20 and new_today + counts["new_leads"] < int(r.get("max_new_leads_per_run", 30))):
+            src = a.research().run_sources(int(r.get("max_new_leads_per_run", 30)) - new_today - counts["new_leads"],
+                                           deadline=time.monotonic() + left() - reserve)
+            out["sources"] = {k: v.get("added", 0) for k, v in src.items() if "skipped" not in v}
         out["pipeline"] = counts
     finally:
         a.close()

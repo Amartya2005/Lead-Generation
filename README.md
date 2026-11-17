@@ -72,6 +72,37 @@ python main.py review
 
 To turn sending back on later, set `sending.enabled: true` in a reviewed commit, then follow the steps below.
 
+### Extra discovery sources (all off by default)
+
+Configured under `research.adapters` in `config/settings.yaml`. Each source is independent and runs
+only when its `enabled` is `true`.
+
+Every result is handled the same way as a search result:
+- It goes through the same quality filters.
+- It is deduplicated across sources, by domain, or by company name plus city.
+- It is saved with its provenance: `source`, `source_url`, `query`, the evidence in `snippet`, and the
+  discovery date in `created_at`.
+- If another source finds an existing lead again, a `seen_again` event with that source's evidence is
+  added to the lead's history.
+
+| Source | What it does | Limits | Status |
+|---|---|---|---|
+| `osm` | Finds businesses on OpenStreetMap (Overpass API) that list their own website, in ICP categories. Cities are taken least-recently-used first, Odisha first. | 4 requests/day, one city each, cached for a week, exponential back-off after any error, robots.txt checked. Every lead keeps "© OpenStreetMap contributors (ODbL)" in its evidence. | Off. Overpass couldn't be reached from the build environment, so the first live run is untested. |
+| `news_rss` | Takes the company each headline is about from startup/SME news feeds, then finds the company's official website. That is a link in the item whose domain carries the company name, or one strict DuckDuckGo lookup (5/day). | Each feed is fetched at most every 12 h, with robots.txt checked. **A feed runs only with `terms: permitted`.** | Off. Checked 2026-11-17: Inc42's and Entrackr's terms forbid automated collection without written consent; YourStory's terms couldn't be read. |
+| X/Twitter | Not implemented: no free, compliant read access (the official API is pay-per-use). | | Deferred |
+| Google Places | Not implemented: website and phone are billed Enterprise fields, and Places content can't be stored. | | Deferred |
+
+Geographic fit is decided by the existing ICP. Enrichment locates each company from its own website
+and Qualification scores it: Odisha first, then Tier-2/3; anything outside India is discarded.
+
+```bash
+python main.py sources
+```
+
+```bash
+python main.py research --source osm
+```
+
 ## Folder structure
 
 ```

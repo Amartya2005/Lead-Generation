@@ -24,12 +24,14 @@ from __future__ import annotations
 import logging
 import random
 import re
+import time
+from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
 from app.config import Config
-from app.db import DB
+from app.db import DB, loads
 from app.tools.domains import host, is_skipped, normalize_url, registered_domain
 from app.tools.geo import Geo
 from app.tools.http import FetchError, PoliteFetcher, RobotsDisallowed
@@ -103,18 +105,43 @@ class ResearchAgent:
         self._generic = vocab | {w + "s" for w in vocab} | {w + "es" for w in vocab}
 
     # ------------------------------------------------------------ queries
+    @staticmethod
+    def _norm(text: str) -> str:
+        return " " + " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split()) + " "
+
     def build_queries(self) -> list[str]:
+        """Least-recently-used rotation over the existing `queries` history: industries and
+        cities never searched come first, then the ones searched longest ago. City groups are
+        still drawn by icp.yaml city_mix (Odisha first); templates take turns."""
         icp = self.cfg.icp
         cities = icp["cities"]
-        mix = icp.get("city_mix", {"odisha": 1.0})
+        mix = {g: w for g, w in icp.get("city_mix", {"odisha": 1.0}).items() if w and cities.get(g)}
         templates, industries = icp["query_templates"], icp["query_industries"]
+        history = [(self._norm(r["query"]), r["ran_at"] or "")
+                   for r in self.db.query("SELECT query, ran_at FROM queries WHERE source='search'")]
+
+        def last_used(terms: list[str]) -> dict[str, str]:
+            last = dict.fromkeys(terms, "")
+            for term in terms:
+                t = self._norm(term)
+                for q, ran in history:
+                    if t in q and ran > last[term]:
+                        last[term] = ran
+            return last
+
+        ind_last = last_used(industries)
+        city_last = last_used([c for g in mix for c in cities[g]])
         rng = random.Random()
         queries: list[str] = []
         attempts = 0
         while len(queries) < self.n_queries and attempts < 500:
             attempts += 1
             group = rng.choices(list(mix), weights=list(mix.values()))[0]
-            q = rng.choice(templates).format(industry=rng.choice(industries), city=rng.choice(cities[group]))
+            industry = min(industries, key=lambda i: (ind_last[i], rng.random()))
+            city = min(cities[group], key=lambda c: (city_last[c], rng.random()))
+            template = templates[(len(history) + len(queries) + attempts) % len(templates)]
+            q = template.format(industry=industry, city=city)
+            ind_last[industry] = city_last[city] = "~"  # just used: sorts after every timestamp
             if q not in queries and not self.db.query_ran(q):
                 queries.append(q)
         return queries
@@ -175,8 +202,9 @@ class ResearchAgent:
             return None  # "Diagnostic Centres", "Clinics Rourkela": a category, not a business
         return t
 
-    def _add(self, company: str, url: str | None, source: str, source_url: str, query: str, snippet: str) -> bool:
-        city_hint = self.geo.city_from_query(query) or self.geo.city_from_query(snippet)
+    def _add(self, company: str, url: str | None, source: str, source_url: str, query: str, snippet: str,
+             city_hint: str | None = None) -> bool:
+        city_hint = city_hint or self.geo.city_from_query(query) or self.geo.city_from_query(snippet)
         if url:
             url = normalize_url(url)
             dom = registered_domain(url)
@@ -184,6 +212,10 @@ class ResearchAgent:
                 return False
             lead_id = self.db.add_lead(company=company or dom, website=url, domain=dom, source=source,
                                        source_url=source_url, query=query, snippet=snippet[:500], city_hint=city_hint)
+            if not lead_id:
+                existing = self.db.find_lead(domain=dom)
+                if existing:
+                    self._seen_again(existing, source, source_url, snippet)
         else:
             lead_id = self.db.add_lead(company=company, website=None, domain=None, source=source,
                                        source_url=source_url, query=query, snippet=snippet[:500],
@@ -191,6 +223,83 @@ class ResearchAgent:
         if lead_id:
             self.db.log(self.name, "discovered", lead_id, {"source": source, "query": query, "url": url})
         return bool(lead_id)
+
+    # ------------------------------------------------------ cross-source identity
+    @staticmethod
+    def _company_key(name: str) -> str:
+        n = re.sub(r"\b(pvt|private|ltd|limited|llp|inc|the|co)\b", " ", (name or "").lower())
+        return re.sub(r"[^a-z0-9]", "", n)
+
+    def _same_company(self, name: str, city: str | None):
+        """An existing lead for the same company name in the same city (it may use another domain)."""
+        key = self._company_key(name)
+        if not city or len(key) < 4:
+            return None
+        rows = self.db.query("SELECT * FROM leads WHERE lower(city_hint)=lower(?) OR lower(city)=lower(?)", (city, city))
+        return next((r for r in rows if self._company_key(r["company"]) == key), None)
+
+    def _seen_again(self, lead, source: str, source_url: str, evidence: str) -> None:
+        """Record another source's sighting of an existing lead (once per source)."""
+        if (lead["source"] or "") == source:
+            return
+        for e in self.db.query("SELECT detail FROM events WHERE lead_id=? AND event='seen_again'", (lead["id"],)):
+            if (loads(e["detail"], {}) or {}).get("source") == source:
+                return
+        self.db.log(self.name, "seen_again", lead["id"],
+                    {"source": source, "source_url": source_url, "evidence": (evidence or "")[:300]})
+
+    def ingest(self, c, budget: dict) -> str:
+        """One candidate from a source adapter -> 'added' | 'seen_again' | 'unresolved' | 'rejected:<why>'.
+        Same gate as search results; budget['resolutions'] limits website lookups (DuckDuckGo)."""
+        name = " ".join((c.company or "").split())
+        if not name or LISTING_TITLE.search(name) or GOVT_NAME.search(name) or self._is_category(name):
+            return "rejected:name"
+        url = c.url
+        if not url:  # a link in the source item whose domain carries the company's name
+            url = next((u for u in c.links if not is_skipped(u, self.skip_domains, self.skip_tlds)
+                        and not self.listing_reason("", u) and self._name_in_domain(name, u)), None)
+        if not url and c.resolve and budget.get("resolutions", 0) > 0:
+            budget["resolutions"] -= 1
+            try:
+                url = self._resolve_website(name, c.city_hint)
+            except SearchRateLimited:
+                budget["resolutions"] = 0
+        if not url:
+            return "unresolved"
+        if is_skipped(url, self.skip_domains, self.skip_tlds) or self.listing_reason("", url):
+            return "rejected:url"
+        existing = self.db.find_lead(domain=registered_domain(url)) or self._same_company(name, c.city_hint)
+        if existing:
+            self._seen_again(existing, c.source, c.source_url, c.evidence)
+            return "seen_again"
+        added = self._add(name, url, c.source, c.source_url, c.query, c.evidence, city_hint=c.city_hint)
+        return "added" if added else "rejected:url"
+
+    def run_sources(self, budget: int | None = None, deadline: float | None = None, only: str | None = None) -> dict:
+        """Run the enabled source adapters (config: research.adapters). Disabled ones are skipped."""
+        from app.sources import build_adapters
+
+        budget = self.max_new if budget is None else budget
+        out: dict[str, dict] = {}
+        for adapter in build_adapters(self.cfg, self.db, self.fetcher, self.geo):
+            if only and adapter.name != only:
+                continue
+            if not adapter.enabled:
+                out[adapter.name] = {"skipped": "disabled"}
+                continue
+            counts: Counter = Counter()
+            lookups = {"resolutions": adapter.resolutions_left()}
+            start = lookups["resolutions"]
+            for cand in adapter.discover(deadline):
+                if budget <= 0 or (deadline is not None and time.monotonic() > deadline):
+                    break
+                outcome = self.ingest(cand, lookups)
+                counts[outcome.split(":")[0]] += 1
+                budget -= outcome == "added"
+            adapter.spend_resolutions(start - lookups["resolutions"])
+            out[adapter.name] = dict(counts)
+            log.info("Source %s: %s", adapter.name, dict(counts) or "nothing new")
+        return out
 
     def _resolve_website(self, name: str, city: str | None) -> str | None:
         """The listing's own website: its domain must carry the company's name."""
@@ -279,5 +388,9 @@ class ResearchAgent:
         budget = max_new or self.max_new
         added = self.run_directories(budget)
         added += self.run_search(budget - added)
+        sources = self.run_sources(budget - added)
+        added += sum(v.get("added", 0) for v in sources.values())
         log.info("Research Agent: %d new leads", added)
-        return {"new_leads": added}
+        out = {"new_leads": added}
+        out.update({f"source:{k}": v.get("added", 0) for k, v in sources.items() if "skipped" not in v})
+        return out

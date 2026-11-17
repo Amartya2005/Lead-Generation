@@ -6,6 +6,8 @@
 * Backs off on 429/503 using Retry-After.
 * Caches pages in SQLite so re-runs don't re-crawl.
 * Optional Playwright render for JavaScript-only pages (same robots rules apply).
+* HTML only by default. Source adapters opt in to feeds / JSON with `accept=` (same robots,
+  delay and back-off rules), and may set their own cache age, retries and timeout.
 """
 from __future__ import annotations
 
@@ -113,8 +115,11 @@ class PoliteFetcher:
         self._last_hit[host] = time.monotonic()
 
     # ----------------------------------------------------------------- fetch
-    def fetch(self, url: str, render: bool | None = None) -> Page:
-        cached = self.db.cache_get(url, self.cache_hours)
+    def fetch(self, url: str, render: bool | None = None, *, accept: tuple[str, ...] = ("html",),
+              cache_hours: float | None = None, retries: int = 3, timeout: float | None = None) -> Page:
+        """accept: content-type substrings allowed (default HTML only). retries=1 means no
+        in-call back-off sleep on 429/503: the caller (a source adapter) backs off instead."""
+        cached = self.db.cache_get(url, self.cache_hours if cache_hours is None else cache_hours)
         if cached and cached["body"] is not None:
             return Page(url, cached["final_url"], cached["status"], cached["body"], cached["content_type"] or "",
                         from_cache=True, rendered=bool(cached["rendered"]))
@@ -123,17 +128,20 @@ class PoliteFetcher:
         if not rp.can_fetch(self.ua, url):
             raise RobotsDisallowed(url)
 
+        html_only = accept == ("html",)
+        headers = None if html_only else {
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, application/json;q=0.9, */*;q=0.5"}
         resp = None
-        for attempt in range(3):
+        for attempt in range(retries):
             self._wait(self._origin(url), rp.crawl_delay(self.ua))
             try:
-                resp = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+                resp = self.session.get(url, timeout=timeout or self.timeout, allow_redirects=True, headers=headers)
             except requests.RequestException as e:
-                if attempt == 2:
+                if attempt == retries - 1:
                     raise FetchError(f"{url}: {e}") from e
                 time.sleep(5 * (attempt + 1))
                 continue
-            if resp.status_code in (429, 503):
+            if resp.status_code in (429, 503) and attempt < retries - 1:
                 retry_after = resp.headers.get("Retry-After", "")
                 wait = int(retry_after) if retry_after.isdigit() else 15 * (2 ** attempt)
                 log.info("%s returned %s; backing off %ss", url, resp.status_code, min(wait, 120))
@@ -150,12 +158,12 @@ class PoliteFetcher:
         ctype = resp.headers.get("Content-Type", "")
         if resp.status_code >= 400:
             raise FetchError(f"{url}: HTTP {resp.status_code}")
-        if "html" not in ctype.lower():
-            raise FetchError(f"{url}: not HTML ({ctype})")
+        if not any(a in ctype.lower() for a in accept):
+            raise FetchError(f"{url}: not {'HTML' if html_only else '/'.join(accept)} ({ctype})")
 
         html = resp.text[: self.max_chars]
         rendered = False
-        if (render or (render is None and self.use_playwright)) and looks_js_only(html):
+        if html_only and (render or (render is None and self.use_playwright)) and looks_js_only(html):
             rendered_html = self._render(final_url)
             if rendered_html:
                 html, rendered = rendered_html[: self.max_chars], True
