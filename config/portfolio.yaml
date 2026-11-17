@@ -29,27 +29,27 @@ projects:
     description: "the website, CRM/ERP system, workflow automation and custom app for CollectIQ Services"
     capabilities: [website, crm, erp, automation, custom_app]
     industries: []          # optional, e.g. [finance, services]: boosts matching for that industry
-    confirmed: false
+    confirmed: true
 
   - id: startupjathara
     name: Startup Jathara
     domain: startupjathara.com
     url: https://startupjathara.com
     kind: client
-    description: "the Startup Jathara event website, with a community platform and online registration system"
+    description: "the Startup Jathara event website and the ISF Startup Jathara application with community and registration features"
     capabilities: [website, event, community, registration, custom_app]
     industries: [events, startup]
-    confirmed: false
+    confirmed: true
 
   - id: focustrigger
     name: FocusTrigger Automation
     domain: focustriggerautomation.com
     url: https://focustriggerautomation.com
     kind: own_company
-    description: "our company site, covering the business automation, website and CRM/ERP work we do"
+    description: "our company site showcasing business automation, website and CRM/ERP work"
     capabilities: [automation, website, crm, erp]
     industries: []
-    confirmed: false
+    confirmed: true
 
   - id: amartya
     name: Amartya portfolio
@@ -60,4 +60,4 @@ projects:
     description: "my portfolio of business websites, automation demos and custom apps"
     capabilities: [website, automation, custom_app]
     industries: []
-    confirmed: false
+    confirmed: true
