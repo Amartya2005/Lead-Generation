@@ -13,7 +13,7 @@
   <a class="brand" href="{{ url_for('dashboard') }}">{{ company.short_name }} · Leads</a>
   <nav class="inline">
     <a href="{{ url_for('dashboard') }}" class="{{ 'on' if request.endpoint == 'dashboard' }}">Home</a>
-    <a href="{{ url_for('leads', status='drafted') }}" class="{{ 'on' if request.endpoint in ('leads', 'lead_detail') }}">Drafts</a>
+    <a href="{{ url_for('leads', status='drafted') }}" class="{{ 'on' if request.endpoint in ('leads', 'lead_detail') }}">Review</a>
     <a href="{{ url_for('suppression') }}" class="{{ 'on' if request.endpoint == 'suppression' }}">Do-not-email</a>
     <a href="{{ url_for('team') }}" class="{{ 'on' if request.endpoint == 'team' }}">Team</a>
     {% if user.is_admin %}<a href="{{ url_for('admin_users') }}" class="{{ 'on' if request.endpoint == 'admin_users' }}">Logins</a>{% endif %}

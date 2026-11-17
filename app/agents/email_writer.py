@@ -85,6 +85,8 @@ def check_draft(cfg: Config, lead: dict, subject: str, body: str) -> list[str]:
     proj = cfg.project(lead.get("matched_project") or "")
     if not proj:
         return ["no matched portfolio project"]
+    if not proj["confirmed"]:
+        return [f"portfolio project {proj['domain']} is not confirmed (config/portfolio.yaml); re-draft to re-match"]
     if not cfg.project_allowed_for(proj, lead.get("sender_id")):
         return [f"{proj['domain']} is {proj['owner']}'s personal portfolio; only they can cite it"]
     return validate(subject or "", body or "", allowed_domains=cfg.allowed_email_domains,
@@ -185,6 +187,12 @@ class EmailAgent:
 
     def draft_one(self, lead) -> tuple[str, list[str]]:
         lead = dict(lead)
+        proj = self.cfg.project(lead.get("matched_project") or "")
+        if not proj or not proj["confirmed"]:  # never cite unconfirmed work: send it back to Matching
+            why = f"matched project '{lead.get('matched_project')}' is not confirmed; re-matching"
+            self.db.update_lead(lead["id"], status="qualified", matched_project=None, match_reason=why)
+            self.db.log(self.name, "requeued", lead["id"], why)
+            return "requeued", [why]
         subject, body, problems, source = self.draft(lead)
         status = "drafted" if lead["email"] else "needs_contact"
         self.db.update_lead(lead["id"], email_subject=subject, email_body=body, validation=problems, status=status)
@@ -196,9 +204,9 @@ class EmailAgent:
         return status, problems
 
     def run(self, limit: int = 100) -> dict:
-        counts = {"drafted": 0, "needs_contact": 0, "invalid": 0}
+        counts = {"drafted": 0, "needs_contact": 0, "invalid": 0, "requeued": 0}
         for lead in self.db.leads_by_status("matched", limit=limit):
             status, problems = self.draft_one(lead)
             counts[status] += 1
-            counts["invalid"] += bool(problems)
+            counts["invalid"] += bool(problems) and status != "requeued"
         return counts

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Lead generation + outreach CLI.
 
-  python main.py run                 # research -> enrich -> qualify -> match -> draft
+  python main.py run                 # research -> enrich -> qualify -> match -> draft (never sends)
   python main.py review              # approve / edit / reject drafts (human approval mode)
-  python main.py send                # send approved drafts (limits, delays, suppression)
+  python main.py portfolio           # which portfolio projects are confirmed (only those are used)
+  python main.py send                # disabled while sending.enabled is false (lead-generation-only mode)
   python main.py sync-inbox          # mark replies/bounces and suppress them
   python main.py report              # Company | Website | Location | Score | Project | Draft | Status
   python main.py team                # company identity + members and their mailboxes
@@ -42,10 +43,12 @@ def _print_results(results: dict) -> None:
 
 
 def _warn_unconfirmed(cfg: Config) -> None:
-    pending = [p["domain"] for p in cfg.portfolio if not p.get("confirmed")]
+    pending = [p["domain"] for p in cfg.unconfirmed_projects]
     if pending:
-        console.print(f"[yellow]Portfolio not confirmed yet: {', '.join(pending)}. Drafts referencing these "
-                      "won't be sent. Edit config/portfolio.yaml and set confirmed: true.[/]")
+        console.print(f"[yellow]Portfolio not confirmed: {', '.join(pending)}. Matching and drafts ignore these "
+                      "until you check each description and set confirmed: true (python main.py portfolio).[/]")
+    if not cfg.sending_enabled:
+        console.print("[cyan]Lead-generation-only mode: sending is disabled. Drafts are for human review only.[/]")
 
 
 # ------------------------------------------------------------------ commands
@@ -62,8 +65,19 @@ def cmd_run(args) -> None:
 
     console.print(f"Report: {write_csv(cfg, db)}")
     push_google_sheets(cfg, db)
-    if cfg.settings["sending"]["human_approval"] and db.status_counts().get("drafted"):
-        console.print("[bold]Next:[/] python main.py review   then   python main.py send")
+    _print_review_summary(cfg, db)
+
+
+def _print_review_summary(cfg: Config, db: DB) -> None:
+    from collections import Counter
+
+    from app.tools.report import review_status
+
+    c = Counter(review_status(cfg, r) for r in db.leads_by_status("drafted", "needs_contact", "qualified"))
+    console.print(f"[bold]Ready for review: {c['ready_for_review']}[/]  · needs fix: {c['needs_fix']}  · "
+                  f"no email: {c['needs_contact']}  · waiting for portfolio confirmation: {c['awaiting_portfolio']}")
+    if c["ready_for_review"] or c["needs_fix"]:
+        console.print("[bold]Next:[/] python main.py review   (or the review page)")
 
 
 def cmd_stage(stage: str):
@@ -101,9 +115,12 @@ def cmd_review(args) -> None:
 
 
 def cmd_send(args) -> None:
-    from app.agents.sender import SenderAgent
+    from app.agents.sender import DISABLED, SenderAgent
 
     cfg, db = _ctx(args)
+    if not cfg.sending_enabled:
+        console.print(f"[yellow]Nothing sent: {DISABLED}.[/]")
+        return
     _warn_unconfirmed(cfg)
     if args.as_member and not cfg.member(args.as_member):
         sys.exit(f"unknown team member '{args.as_member}'")
@@ -111,6 +128,23 @@ def cmd_send(args) -> None:
     if args.dry_run:
         s.dry_run = True
     console.print(s.run(ignore_window=args.ignore_window, limit=args.limit))
+
+
+def cmd_portfolio(args) -> None:
+    """Show each portfolio project, whether it is confirmed, and what blocks it."""
+    cfg, db = _ctx(args)
+    t = Table("id", "domain", "kind", "confirmed", "description", "problems", show_lines=True,
+              title="config/portfolio.yaml (only confirmed projects are used by Matching + Email Writer)")
+    for p in cfg.portfolio:
+        t.add_row(p["id"], p["domain"], p["kind"], "[green]yes[/]" if p["confirmed"] else "[red]no[/]",
+                  p["description"], "; ".join(p["description_problems"]) or "")
+    console.print(t)
+    waiting = db.scalar("SELECT count(*) FROM leads WHERE status='qualified' AND match_reason LIKE 'waiting for portfolio%'")
+    if cfg.unconfirmed_projects:
+        console.print(f"[yellow]{len(cfg.unconfirmed_projects)} unconfirmed; {waiting} qualified leads waiting. "
+                      "Check each description against the live site, then set confirmed: true.[/]")
+    if not any(p["confirmed"] for p in cfg.portfolio):
+        sys.exit(1)  # nothing can be drafted yet
 
 
 def cmd_sync_inbox(args) -> None:
@@ -138,11 +172,11 @@ def cmd_report(args) -> None:
     from app.tools.report import push_google_sheets, rows, write_csv
 
     cfg, db = _ctx(args)
-    t = Table("Company", "Website", "Location", "Score", "Matched Project", "Email Draft", "Status",
+    t = Table("Company", "Website", "Location", "Score", "Matched Project", "Email Draft", "Status", "Review Status",
               show_lines=True, title="Leads")
     for r in rows(cfg, db, args.status)[-args.limit:]:
         draft = r[5] if args.full else r[5].split("\n")[0]  # subject line; --full for the whole draft
-        t.add_row(str(r[0])[:30], r[1], r[2], str(r[3]), r[4], draft, r[6])
+        t.add_row(str(r[0])[:30], r[1], r[2], str(r[3]), r[4], draft, r[6], r[7])
     console.print(t)
     console.print(db.status_counts())
     console.print(f"CSV: {write_csv(cfg, db, args.csv)}")
@@ -298,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run", help="full pipeline (drafts only unless --send)")
     r.add_argument("--max-leads", type=int, default=None, help="max new leads to discover this run")
     r.add_argument("--stages", help="comma list: research,enrich,qualify,match,write,send")
-    r.add_argument("--send", action="store_true", help="also run the Sender Agent at the end")
+    r.add_argument("--send", action="store_true", help="also send approved drafts (ignored while sending is disabled)")
     r.add_argument("--ignore-window", action="store_true")
     r.add_argument("--as", dest="as_member", metavar="MEMBER", help="team member (config/team.yaml) who signs new drafts")
     r.set_defaults(func=cmd_run)
@@ -323,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--import", dest="import_file", metavar="CSV", help="import decisions from CSV")
     rv.set_defaults(func=cmd_review)
 
-    sd = sub.add_parser("send", help="Sender Agent: send approved emails")
+    sd = sub.add_parser("send", help="Sender Agent: send approved emails (disabled in lead-generation-only mode)")
     sd.add_argument("--dry-run", action="store_true")
     sd.add_argument("--ignore-window", action="store_true", help="send outside business hours")
     sd.add_argument("--limit", type=int, default=None, help="send at most N now (still capped by daily limit)")
@@ -357,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     ts.set_defaults(func=cmd_test_smtp)
 
     sub.add_parser("team", help="show company identity, members and mailboxes").set_defaults(func=cmd_team)
+    sub.add_parser("portfolio", help="which portfolio projects are confirmed").set_defaults(func=cmd_portfolio)
 
     w = sub.add_parser("web", help="run the review page locally (dev mode, http)")
     w.add_argument("--host", default="127.0.0.1")

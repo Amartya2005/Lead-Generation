@@ -42,27 +42,39 @@ industries:
   education:     {keywords: [coaching, institute, academy, tuition, classes, school, college, training centre, training center], needs: [crm, automation, custom_app]}
   healthcare:    {keywords: [clinic, hospital, diagnostic, pathology, dental, physiotherapy, nursing home, pharmacy], needs: [automation, website, crm]}
   real_estate:   {keywords: [real estate, builders, developers, properties, apartments, plots, realty], needs: [crm, website]}
-  manufacturing: {keywords: [manufacturer, manufacturing, factory, industries, fabrication, plant, foundry], needs: [erp, automation]}
-  distribution:  {keywords: [distributor, wholesaler, wholesale, dealer, stockist, supplier, trading, traders], needs: [erp, automation]}
+  manufacturing: {keywords: [manufacturer, manufacturing, factory, industries, fabrication, plant, foundry, rice mill, cashew, processing unit, handloom, weavers, packaging, printing press], needs: [erp, automation]}
+  distribution:  {keywords: [distributor, wholesaler, wholesale, dealer, stockist, supplier, trading, traders, exporter, exporters], needs: [erp, automation]}
   hospitality:   {keywords: [hotel, resort, restaurant, cafe, caterer, catering, banquet], needs: [website, automation]}
   retail:        {keywords: [showroom, store, boutique, jewellers, jewellery, furniture, electronics, mart], needs: [website, automation, erp]}
   logistics:     {keywords: [logistics, transport, courier, packers and movers, cargo, fleet], needs: [custom_app, erp]}
   professional:  {keywords: [chartered accountant, ca firm, law firm, advocates, consultancy, consultants, tax], needs: [website, crm]}
-  interiors:     {keywords: [interior, architect, modular kitchen, construction], needs: [website, crm]}
+  interiors:     {keywords: [interior, architect, modular kitchen, construction, contractor, solar installation], needs: [website, crm]}
   travel:        {keywords: [travel agency, tours and travels, tour operator, holidays], needs: [website, crm, automation]}
   events:        {keywords: [event management, events, wedding planner, exhibition, summit], needs: [website, registration, custom_app]}
   startup:       {keywords: [startup, saas, platform, incubated, founders, seed funded], needs: [custom_app, website]}
 
-# Search query generation. {industry} and {city} are filled in; Odisha cities are tried first.
-query_industries: [coaching institute, clinic, diagnostic centre, real estate developer, manufacturer,
-                   distributor, hotel, restaurant, furniture showroom, interior designer, travel agency,
-                   CA firm, logistics company, event management, school, jewellers]
+# Search query generation. {industry} and {city} are filled in.
+# Lead quality first: every template is aimed at a business's OWN website (contact/about pages,
+# "Pvt Ltd", WhatsApp ordering), not at directories. Justdial/IndiaMART `site:` queries were removed:
+# they mostly returned category pages and listings with no website of their own.
+# Industries chosen for real B2B need (ERP/CRM/automation); wedding/event, restaurant and hotel
+# queries were dropped because they mostly surfaced directories and aggregators.
+query_industries: [coaching institute, diagnostic centre, dental clinic, nursing home, real estate developer,
+                   construction company, manufacturer, steel fabrication, rice mill, cashew processing,
+                   seafood exporter, handloom weavers, distributor, wholesaler, pharma distributor,
+                   furniture manufacturer, interior designer, travel agency, CA firm, logistics company,
+                   transport company, school, packaging company, printing press, solar installer,
+                   agricultural equipment dealer, IT training institute]
 query_templates:
-  - "{industry} in {city}"
-  - "{industry} {city} contact"
-  - "\"{city}\" {industry} \"whatsapp us\""
-  - "site:indiamart.com {industry} {city}"
-  - "site:justdial.com {industry} {city}"
-  - "startup {city} hiring operations"
-# Share of queries drawn from each city group (rest from Odisha).
-city_mix: {odisha: 0.5, tier2: 0.2, tier3: 0.2, metro: 0.1}
+  - "{industry} {city} \"contact us\""
+  - "{industry} {city} \"about us\""
+  - "\"{city}\" {industry} \"whatsapp\""
+  - "{industry} {city} \"pvt ltd\""
+  - "{industry} in {city} \"enquiry\""
+  - "{industry} {city} official website"
+# Appended to every query as -site:<domain> (DuckDuckGo operator), so result slots aren't wasted on
+# directories. Keep it short: very long queries return worse results. skip_domains still applies.
+query_exclude_sites: [justdial.com, indiamart.com, sulekha.com, tradeindia.com, wedmegood.com, weddingwire.in]
+# Share of queries drawn from each city group: Odisha first, then Tier-2/3. Metros are off
+# (big-city firms are rarely the ICP and their results are dominated by directories).
+city_mix: {odisha: 0.6, tier2: 0.2, tier3: 0.2, metro: 0.0}

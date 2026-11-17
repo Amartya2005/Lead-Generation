@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ status|replace('_', ' ')|capitalize }}{% endblock %}
+{% block title %}{{ status|status_label|capitalize }}{% endblock %}
 {% block content %}
 <h1>Leads</h1>
 <div class="tabs">
   {% for t in tabs %}
-    <a href="{{ url_for('leads', status=t, who=who) }}" class="{{ 'on' if t == status }}">{{ t|replace('_', ' ') }} ({{ counts.get(t, 0) }})</a>
+    <a href="{{ url_for('leads', status=t, who=who) }}" class="{{ 'on' if t == status }}">{{ t|status_label }} ({{ counts.get(t, 0) }})</a>
   {% endfor %}
 </div>
 <form class="inline card" method="get">
@@ -22,7 +22,9 @@
   <div class="row">
     <div>
       <a href="{{ url_for('lead_detail', lead_id=r.id) }}"><b>{{ r.company }}</b></a>
-      {% if loads(r.validation, []) %}<span class="chip bad">needs fixes</span>{% endif %}
+      {% set rs = review_status(r) %}
+      {% if rs == 'ready_for_review' %}<span class="chip good">ready for review</span>
+      {% elif rs in ('needs_fix', 'awaiting_portfolio') %}<span class="chip bad">{{ rs|replace('_', ' ') }}</span>{% endif %}
       <div class="meta">{{ r.location or r.city_hint or '—' }} · {{ r.domain or 'no website' }}
         · {{ r.matched_project or 'no project' }} · {{ member_name(r.sender_id) }}</div>
       {% if r.email_subject %}<div class="meta">“{{ r.email_subject }}”</div>{% endif %}

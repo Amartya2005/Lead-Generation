@@ -19,6 +19,59 @@ research ─▶ enrich ─▶ qualify ─▶ match ─▶ write ──▶ [human
  directories
 ```
 
+## Lead-generation-only mode (current default)
+
+The pipeline currently **generates and qualifies leads only. It never sends email.**
+
+- `sending.enabled: false` in `config/settings.yaml` is the master switch. While it's false, `send`,
+  `run --send`, `/api/tick` and the review page's "Send test email" all refuse, no SMTP connection is
+  opened, and `DRY_RUN` is forced on. It can't be overridden from `.env` or Vercel env vars.
+- The default run is `research → enrich → qualify → match → write`. The send node isn't added to the
+  LangGraph graph at all.
+- Drafts are still written for human review. Approving one on the review page only marks it as reviewed.
+- Only portfolio projects with `confirmed: true` are used by Matching and the Email Writer. Until a project is
+  confirmed, leads it would fit stay `qualified` ("waiting for portfolio confirmation") and are matched
+  on the next run after you confirm it.
+- Each lead gets a **Review Status** in the report, CSV and review page:
+  `ready_for_review` (clean draft, confirmed project, has an email) · `needs_fix` · `needs_contact` ·
+  `awaiting_portfolio` · or the pipeline status.
+
+```bash
+python main.py portfolio
+```
+Shows which projects are confirmed. It exits with code 1 while none are, because nothing can be drafted yet.
+
+```bash
+python main.py run --max-leads 20
+```
+
+```bash
+python main.py report --status drafted
+```
+
+```bash
+python main.py review
+```
+
+**Lead quality filters.** A search result becomes a lead only if it looks like one company's own website:
+- **Directory domains are skipped.** `skip_domains` covers Justdial, IndiaMART, wedding and event
+  directories, property, education and health aggregators, and hosted page builders.
+- **Directories are excluded from searches.** Queries carry `-site:` exclusions (`icp.yaml → query_exclude_sites`).
+- **List pages are rejected.** That means listicle titles ("Top 10…", "near me", "Phone Numbers"),
+  listing URLs (`/category/`, `/best-x-in-city`), and category names such as "Dental Clinics in Puri",
+  "Best Jewellers in X" or "Wedding Planners in Y".
+- **SEO taglines are allowed.** A title like "Sai Dental Care | Best Dental Clinic in Puri" on
+  saidentalcare.in is kept.
+- **Directory listings need their own site.** A listing is kept only when its own website is found and
+  that domain carries the company name.
+- **Enrichment drops pages that aren't a working company site.** That covers parked, expired and default
+  hosting pages, "coming soon" placeholders, empty pages, directory sites, and redirects to a platform.
+  These leads are marked `discarded` with the reason.
+- **The LLM can veto.** When an LLM is configured, it marks directories, listings and blogs as not
+  a company site, and those are discarded.
+
+To turn sending back on later, set `sending.enabled: true` in a reviewed commit, then follow the steps below.
+
 ## Folder structure
 
 ```
@@ -288,6 +341,7 @@ deep-merged over the repo's `config/`, so `git pull` never overwrites it.
 
 | Control | Where | Default |
 |---|---|---|
+| **Sending master switch** (lead-generation-only mode) | `sending.enabled` in settings.yaml (no env override) | **OFF** |
 | Human approval: only `approved` drafts are sent | `HUMAN_APPROVAL` / `sending.human_approval` | **ON** |
 | Daily limit per mailbox (rolling 24h, counted from actual sends) | `DAILY_SEND_LIMIT` | **25** |
 | Random delay between sends | `sending.min/max_delay_seconds` | 90–300 s |
@@ -295,7 +349,7 @@ deep-merged over the repo's `config/`, so `git pull` never overwrites it.
 | Suppression list: emailed / bounced / replied / manual, by email and domain | `suppression` table | always on |
 | One email per company domain | `sending.max_per_domain` | 1 |
 | Re-validation right before sending (catches bad manual edits) | `sender.check()` | always on |
-| Unconfirmed portfolio project blocks sending | `portfolio.yaml` → `confirmed` | always on |
+| Unconfirmed portfolio project is never matched, drafted or sent | `portfolio.yaml` → `confirmed` | always on |
 | Personal portfolio only cited by its owner | `portfolio.yaml` → `owner` | always on |
 | Inactive or unknown team member blocks sending | `team.yaml` → `active` | always on |
 | Opt-out line + `List-Unsubscribe` header | signature | always on |
@@ -352,7 +406,8 @@ stored and shown in `review` and `show`.
 
 `discovered → enriched → qualified → matched → drafted → approved → sent → replied / bounced`,
 plus `no_website` (directory listing only, kept for manual follow-up), `unreachable`, `blocked_robots`,
-`discarded`, `needs_contact` (good fit but no public email address), `rejected`, `failed` and `suppressed`.
+`discarded` (low score, or not a real company website), `needs_contact` (good fit but no public email address),
+`rejected`, `failed` and `suppressed`. `drafted` is shown as **ready for review** on the review page.
 Every step is written to the `events` table (`python main.py show <id>`).
 
 ## Notes

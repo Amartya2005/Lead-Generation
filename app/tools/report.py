@@ -1,5 +1,12 @@
-"""Per-lead output: Company | Website | Location | Score | Matched Project | Email Draft | Status.
-Writes CSV, optionally mirrors to Google Sheets (free service account)."""
+"""Per-lead output: Company | Website | Location | Score | Matched Project | Email Draft | Status | Review Status.
+Writes CSV, optionally mirrors to Google Sheets (free service account).
+
+Review Status is what a human should do next (emails are never sent in lead-generation-only mode):
+  ready_for_review    draft written, passes every rule, cites a confirmed project, has an email address
+  needs_fix           draft exists but breaks a rule or cites an unconfirmed project (edit or re-draft)
+  needs_contact       good fit + draft, but no public email address (phone / manual follow-up)
+  awaiting_portfolio  qualified, but only an unconfirmed portfolio project fits (confirm it)
+  otherwise the pipeline status (discovered, enriched, discarded, approved, rejected ...)"""
 from __future__ import annotations
 
 import csv
@@ -9,8 +16,23 @@ from app.config import Config
 from app.db import DB
 
 log = logging.getLogger("report")
-COLUMNS = ["Company", "Website", "Location", "Score", "Matched Project", "Email Draft", "Status",
+COLUMNS = ["Company", "Website", "Location", "Score", "Matched Project", "Email Draft", "Status", "Review Status",
            "Sender", "Email", "Needs", "Reasons", "Updated"]
+READY = "ready_for_review"
+
+
+def review_status(cfg: Config, lead) -> str:
+    from app.db import loads
+
+    status = lead["status"]
+    if status == "drafted":
+        proj = cfg.project(lead["matched_project"] or "")
+        if loads(lead["validation"], []) or not proj or not proj["confirmed"]:
+            return "needs_fix"
+        return READY
+    if status == "qualified" and (lead["match_reason"] or "").startswith("waiting for portfolio"):
+        return "awaiting_portfolio"
+    return status
 
 
 def rows(cfg: Config, db: DB, status: str | None = None) -> list[list]:
@@ -22,7 +44,7 @@ def rows(cfg: Config, db: DB, status: str | None = None) -> list[list]:
         draft = f"Subject: {r['email_subject']}\n\n{r['email_body']}" if r["email_body"] else ""
         out.append([
             r["company"], r["website"] or "", r["location"] or r["city_hint"] or "", r["score"] if r["score"] is not None else "",
-            proj["domain"] if proj else "", draft, r["status"], r["sender_id"] or "", r["email"] or "",
+            proj["domain"] if proj else "", draft, r["status"], review_status(cfg, r), r["sender_id"] or "", r["email"] or "",
             ", ".join(loads(r["needs"], [])), "; ".join(loads(r["reasons"], [])), r["updated_at"],
         ])
     return out

@@ -1,5 +1,9 @@
 """Sender Agent: sends approved emails over Gmail/Outlook SMTP with safety controls.
 
+LEAD-GENERATION-ONLY MODE: while `sending.enabled` is false in config/settings.yaml (the
+default), every entry point here returns without opening an SMTP connection, and
+`deliver()` refuses as a last line of defence.
+
 Each lead is sent by its assigned team member (config/team.yaml): from the
 member's own mailbox if SMTP_PASSWORD_<ID> is set, otherwise from the shared
 company mailbox with the member's name as display name.
@@ -38,6 +42,14 @@ class SendBlocked(Exception):
     pass
 
 
+DISABLED = "sending disabled (lead-generation-only mode: sending.enabled is false in config/settings.yaml)"
+
+
+def assert_sending_enabled(cfg: Config) -> None:
+    if not cfg.sending_enabled:
+        raise SendBlocked(DISABLED)
+
+
 class SenderAgent:
     name = "sender"
 
@@ -47,7 +59,8 @@ class SenderAgent:
         self.daily_limit = int(s.get("daily_limit", 25))
         self.min_delay, self.max_delay = float(s.get("min_delay_seconds", 90)), float(s.get("max_delay_seconds", 300))
         self.approval = bool(s.get("human_approval", True))
-        self.dry_run = bool(s.get("dry_run", False))
+        self.enabled = cfg.sending_enabled
+        self.dry_run = bool(s.get("dry_run", False)) or not self.enabled
         self.window = s.get("send_window", {})
         self.only_member = only_member
         self._smtp: dict[str, smtplib.SMTP] = {}
@@ -134,7 +147,13 @@ class SenderAgent:
         self.connect(mb).quit()
         return f"SMTP login OK for {mb['smtp_user']} ({mb['id']}), sending as \"{self.cfg.from_name(member)}\""
 
+    def deliver(self, smtp: smtplib.SMTP, msg: EmailMessage) -> None:
+        """The only place a message leaves the process."""
+        assert_sending_enabled(self.cfg)
+        smtp.send_message(msg)
+
     def _smtp_for(self, mailbox: dict) -> smtplib.SMTP:
+        assert_sending_enabled(self.cfg)
         if mailbox["id"] not in self._smtp:
             self._smtp[mailbox["id"]] = self.connect(mailbox)
         return self._smtp[mailbox["id"]]
@@ -143,6 +162,9 @@ class SenderAgent:
     def run(self, ignore_window: bool = False, limit: int | None = None) -> dict:
         from app.db import AlreadyRunning
 
+        if not self.enabled:
+            log.warning("Not sending: %s", DISABLED)
+            return {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0, "skipped": DISABLED}
         try:
             with self.db.lock("send", ttl_seconds=4 * 3600):
                 return self._run(ignore_window, limit)
@@ -187,7 +209,11 @@ class SenderAgent:
         if not self.db.claim_lead(lead["id"], lead["status"], "sending"):
             return "skipped"
         try:
-            self._smtp_for(mailbox).send_message(msg)
+            self.deliver(self._smtp_for(mailbox), msg)
+        except SendBlocked as e:  # sending switched off mid-run: put the lead back untouched
+            self.db.update_lead(lead["id"], status=lead["status"])
+            self.db.log(self.name, "blocked", lead["id"], str(e))
+            return "blocked"
         except smtplib.SMTPRecipientsRefused as e:
             self.db.update_lead(lead["id"], status="bounced", error=str(e)[:300])
             self.db.suppress(lead["email"], "email", "bounced")
@@ -252,6 +278,8 @@ class SenderAgent:
         from app.db import AlreadyRunning
 
         counts = {"sent": 0, "blocked": 0, "failed": 0, "dry_run": 0}
+        if not self.enabled:
+            return {**counts, "skipped": DISABLED}
         if not ignore_window and not self.in_window():
             return {**counts, "skipped": "outside send window"}
         next_at = self.db.kv_get("next_send_at")

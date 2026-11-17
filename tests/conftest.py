@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture()
 def cfg(tmp_path, monkeypatch):
-    """Config copy with confirmed portfolio, no LLM, fast crawl, no send window."""
+    """Config copy with confirmed portfolio, no LLM, fast crawl, no send window.
+
+    Sending is switched ON here so the Sender Agent's machinery (limits, suppression, claims) stays
+    tested against a fake SMTP. The repo default is OFF: see tests/test_leadgen_mode.py."""
     cdir = tmp_path / "config"
     shutil.copytree(ROOT / "config", cdir)
     port = yaml.safe_load((cdir / "portfolio.yaml").read_text())
@@ -21,7 +24,7 @@ def cfg(tmp_path, monkeypatch):
     (cdir / "portfolio.yaml").write_text(yaml.safe_dump(port))
     s = yaml.safe_load((cdir / "settings.yaml").read_text())
     s["crawl"].update(per_host_delay_seconds=0, use_playwright_fallback=False, cache_hours=0)
-    s["sending"].update(min_delay_seconds=0, max_delay_seconds=0, send_window={})
+    s["sending"].update(min_delay_seconds=0, max_delay_seconds=0, send_window={}, enabled=True)
     s["storage"]["db_path"] = str(tmp_path / "leads.db")
     (cdir / "settings.yaml").write_text(yaml.safe_dump(s))
     team = yaml.safe_load((cdir / "team.yaml").read_text())

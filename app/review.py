@@ -23,7 +23,7 @@ def _show(cfg: Config, lead, idx: int, total: int) -> None:
             f"{lead['website']}  ·  {lead['location'] or '?'}  ·  score [bold]{lead['score']}[/]/10\n"
             f"To: {lead['email']}   From: {cfg.from_name(cfg.member(lead['sender_id']) or cfg.member(None))}   "
             f"Project: {proj.get('domain')} "
-            f"{'[green]confirmed[/]' if proj.get('confirmed') else '[red]UNCONFIRMED (will not send)[/]'}\n"
+            f"{'[green]confirmed[/]' if proj.get('confirmed') else '[red]UNCONFIRMED: edit/re-draft, or confirm it[/]'}\n"
             f"Why: {'; '.join(loads(lead['reasons'], [])[:6])}")
     console.print(Panel(head, title="Lead", border_style="cyan"))
     console.print(Panel(f"[bold]Subject:[/] {lead['email_subject']}\n\n{lead['email_body']}", title="Draft",
@@ -66,8 +66,10 @@ def interactive(cfg: Config, db: DB) -> dict:
                 db.log("review", "edited", lead["id"], {"problems": problems})
                 continue
             if choice == "a":
-                if loads(lead["validation"], []):
-                    console.print("[red]Fix the rule problems first (edit), or reject.[/]")
+                problems = check_draft(cfg, dict(lead), lead["email_subject"], lead["email_body"])
+                if problems:  # re-checked now: the portfolio may have changed since drafting
+                    db.update_lead(lead["id"], validation=problems)
+                    console.print("[red]Fix the rule problems first (edit), or reject:[/] " + "; ".join(problems))
                     continue
                 db.update_lead(lead["id"], status="approved", approved_at=now())
                 db.log("review", "approved", lead["id"])

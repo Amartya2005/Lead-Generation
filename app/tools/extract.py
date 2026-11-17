@@ -39,6 +39,20 @@ GROWTH_PHRASES = (
     "we are hiring", "we're hiring", "join our team", "current openings", "new branch", "now open",
     "expanding", "launching soon", "coming soon", "opening soon", "new outlet", "franchise",
 )
+# The fetched page is not a working company website.
+PARKED_PHRASES = (
+    "domain is for sale", "this domain may be for sale", "buy this domain", "domain for sale", "make an offer on this domain",
+    "parked free", "parkingcrew", "sedoparking", "hugedomains", "this domain has expired", "domain has expired",
+    "account suspended", "this account has been suspended", "apache2 ubuntu default page", "welcome to nginx",
+    "default web site page", "future home of something quite cool", "index of /", "it works!",
+)
+PLACEHOLDER_PHRASES = ("coming soon", "under construction", "under maintenance", "launching soon", "website is ready")
+DIRECTORY_PHRASES = (
+    "add your business", "list your business", "claim this listing", "claim your listing", "free listing",
+    "post your requirement", "get best price", "get quotes from", "verified sellers", "view all vendors",
+    "browse vendors", "wedding vendors", "wedding venues", "write a review", "sponsored listing", "business directory",
+)
+
 ONLINE_TOOLS = {
     "payments": ("razorpay", "paytm", "payu", "instamojo", "cashfree", "stripe.com", "ccavenue", "phonepe"),
     "booking": ("calendly", "book now", "book an appointment", "book appointment", "schedule a call", "setmore", "zoho bookings"),
@@ -90,6 +104,9 @@ def extract(html: str, url: str, site_domain: str = "") -> dict:
         (h for h, _ in links if "linkedin.com/" in h.lower()), None)
     socials = sorted({urlparse(h).hostname for h, _ in links
                       if re.search(r"facebook\.com|instagram\.com|youtube\.com|twitter\.com|x\.com/", h, re.I)} - {None})
+    own_host = (urlparse(url).hostname or "").removeprefix("www.")
+    external_hosts = {(urlparse(h).hostname or "").removeprefix("www.") for h, _ in links if h.startswith("http")}
+    external_hosts -= {"", own_host}
 
     # ---- internal pages worth visiting
     base_host = (urlparse(url).hostname or "").removeprefix("www.")
@@ -172,7 +189,27 @@ def extract(html: str, url: str, site_domain: str = "") -> dict:
         "founded": int(founded.group(1)) if founded else None,
         "listed_company": bool(re.search(r"\b(NSE|BSE)\s*(?:listed|:)|listed on (the )?(NSE|BSE)", text)),
         "word_count": len(text.split()),
+        "external_hosts": len(external_hosts),
+        "parked_phrases": [p for p in PARKED_PHRASES if p in text_lower or p in title.lower()],
+        "placeholder_phrases": [p for p in PLACEHOLDER_PHRASES if p in text_lower],
+        "directory_phrases": [p for p in DIRECTORY_PHRASES if p in text_lower],
     }
+
+
+def site_problem(home: dict) -> str | None:
+    """Why a fetched homepage is NOT a working company website (None = looks like one).
+    `home` is extract() output for the homepage."""
+    words = home.get("word_count") or 0
+    if home.get("parked_phrases") and words < 600:
+        return "parked / expired / default hosting page (" + home["parked_phrases"][0] + ")"
+    if home.get("placeholder_phrases") and words < 150:
+        return "placeholder page (" + home["placeholder_phrases"][0] + ")"
+    dir_hits = home.get("directory_phrases") or []
+    if len(dir_hits) >= 2 or (dir_hits and (home.get("external_hosts") or 0) >= 25):
+        return "directory / listing site (" + ", ".join(dir_hits[:2]) + ")"
+    if words < 20 and not home.get("emails") and not home.get("phones"):
+        return "empty page: no content or contact details"
+    return None
 
 
 def merge(signals: list[dict]) -> dict:
